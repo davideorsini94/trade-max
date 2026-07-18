@@ -1,0 +1,81 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+  --tm-bg: #0b0f1a;
+  --tm-surface: #121826;
+  --tm-surface-2: #171f30;
+  --tm-border: #232c40;
+  --tm-text: #e6ebf5;
+  --tm-text-muted: #8b95ab;
+  --tm-gain: #34d399;
+  --tm-loss: #fb7185;
+  --tm-accent: #f5b942;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background-color: var(--tm-bg);
+  color: var(--tm-text);
+  font-feature-settings: "tnum" 1, "cv02" 1;
+  -webkit-font-smoothing: antialiased;
+}
+
+* {
+  border-color: var(--tm-border);
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background-color: #2a3448;
+  border-radius: 8px;
+  border: 2px solid var(--tm-bg);
+}
+
+::selection {
+  background-color: rgba(52, 211, 153, 0.3);
+}
+
+.tm-scroll-x {
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+@keyframes tm-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
+.tm-pulse {
+  animation: tm-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes tm-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.tm-spin {
+  animation: tm-spin 0.8s linear infinite;
+}

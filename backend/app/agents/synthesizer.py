@@ -1,0 +1,219 @@
+"""Synthesizer agent (blueprint 5.4).
+
+The chief investment strategist: combines the four analyst reports into a single
+conservative, actionable proposal (action + sizing + allocation + levels +
+rationale). Consumes aggregated inputs rather than a raw ``AgentContext``, so it
+overrides ``run``/``build_user_prompt`` while reusing ``BaseAgent`` helpers and
+the mandatory lessons block.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from app.agents.base import (
+    AgentResult,
+    BaseAgent,
+    clamp,
+    coerce_enum,
+    coerce_float,
+    coerce_int,
+    coerce_optional_float,
+    coerce_optional_str,
+    coerce_str,
+    compact_json,
+    resolve_llm_pref,
+)
+from app.llm.client import LLMClient
+from app.schemas import Action, Sizing
+
+ACTION_VALUES: frozenset[str] = frozenset(a.value for a in Action)
+SIZING_VALUES: frozenset[str] = frozenset(s.value for s in Sizing)
+
+#: The four analyst slots the synthesizer expects, in canonical order.
+ANALYST_KEYS: tuple[str, ...] = ("technical", "fundamentals", "macro_news", "corporate_news")
+
+_DEFAULT_WEIGHTS: dict[str, float] = {
+    "technical": 0.3,
+    "fundamentals": 0.3,
+    "macro_news": 0.2,
+    "corporate_news": 0.2,
+}
+
+_SYSTEM_BODY = """\
+You are the chief investment strategist of a CONSERVATIVE advisory desk. Your \
+non-negotiable priority is CAPITAL PRESERVATION: missing a gain is acceptable, taking \
+a large loss is not. This is advisory only — you never execute orders.
+
+You are given four analyst reports — technical, fundamentals, macro, and corporate \
+news. A report may be null when that analyst failed; simply weight it as absent and \
+lean on the others (and lower overall confidence when coverage is thin).
+
+How to combine them:
+- Weight each analyst by its own confidence AND data_quality (GOOD > PARTIAL > POOR). \
+Discount any analyst that the lessons below flag as historically unreliable.
+- Look for agreement and for dissent. When the analysts genuinely conflict, prefer a \
+cautious action (often HOLD) and a smaller size; record the disagreement in "dissent".
+- Respect the requested risk profile and the budget context provided.
+- Prefer GRADUAL entries (DCA or PARTIAL) over ALL_IN. Reserve ALL_IN for rare, \
+high-conviction, low-volatility setups — and even then a conservative desk usually \
+avoids it. Use WAIT sizing together with a HOLD action when evidence is mixed or thin.
+- For a BUY, set a realistic stop_loss_price (below a sensible technical level) and a \
+take_profit_price consistent with the horizon; entry_price should reflect the current \
+close. estimated_profit_pct is your expected move to the take-profit over the horizon.
+- Consider the previous recommendation for CONSISTENCY: do not whipsaw between BUY and \
+SELL on marginal evidence; if you reverse a recent stance, justify it in the rationale.
+- allocation_pct is the percentage of the TOTAL budget to allocate (0 for HOLD/WAIT). \
+Keep it modest; downstream deterministic risk policy may reduce it further.
+
+Never invent data that no analyst reported. Base every claim on the reports and \
+context provided.
+
+Writing rationale_it (this is the text the user actually reads):
+- Write it like a good, honest consultant explaining the decision to a friend who \
+knows nothing about finance: clear, concrete, and warm, never a wall of jargon.
+- Say plainly WHAT to do (buy, hold, or sell — and how, e.g. gradually with DCA or \
+all at once), then explain WHY, citing the analysts' concrete findings (technical, \
+fundamentals, macro, corporate news) and explaining every financial term the first \
+time you use it, following the ITALIAN OUTPUT STYLE block.
+- Spell out the concrete RISKS the user is taking, in plain words.
+- Explain what the stop_loss_price and take_profit_price mean IN PRACTICE: the stop \
+loss is the price at which the position is closed to cap the loss, the take profit is \
+the price at which the gain is cashed in — say roughly what each implies for the \
+user's money.
+- Use 6 to 10 short sentences and finish with the practical takeaway ("cosa significa \
+in pratica").
+
+Output STRICT JSON and NOTHING else — no markdown, no code fences, no text outside \
+the single JSON object. It MUST match exactly this schema:
+{
+  "action": "BUY" | "SELL" | "HOLD",
+  "sizing_strategy": "ALL_IN" | "DCA" | "PARTIAL" | "WAIT",
+  "confidence": <number in [0.0, 1.0]>,
+  "allocation_pct": <number in [0.0, 100.0]>,
+  "horizon_days": <integer, typically 30>,
+  "entry_price": <number or null>,
+  "stop_loss_price": <number or null>,
+  "take_profit_price": <number or null>,
+  "estimated_profit_pct": <number>,
+  "agent_weights": {"technical": <0..1>, "fundamentals": <0..1>, "macro_news": <0..1>, "corporate_news": <0..1>},
+  "dissent": "<main disagreement between analysts, or null>",
+  "rationale_it": "<6-10 sentences in ITALIAN, written like advice to a friend: what to do, why (citing the analysts' findings with every term explained on first use), the concrete risks, and what the stop loss / take profit levels mean in practice>"
+}
+All keys are required. rationale_it is in Italian; everything else uses the literals \
+above. Do not add keys that are not in the schema."""
+
+
+class SynthesizerAgent(BaseAgent):
+    """Combines the four analyst reports into a single conservative proposal."""
+
+    name = "synthesizer"
+    temperature = 0.25
+    # Bumped from 2000: rationale_it is now 6-10 sentences with inline term
+    # explanations, so the JSON payload needs more room to complete.
+    max_tokens = 2600
+
+    def _system_body(self) -> str:
+        return _SYSTEM_BODY
+
+    def build_user_prompt(
+        self,
+        *,
+        analyst_outputs: dict[str, dict | None],
+        price_summary: dict[str, Any],
+        risk_profile: str,
+        total_budget: float,
+        currency: str,
+        previous_recommendation: dict[str, Any] | None,
+    ) -> str:
+        """Serialise the aggregated decision inputs as a compact JSON payload."""
+        outputs = analyst_outputs if isinstance(analyst_outputs, dict) else {}
+        reports = {key: outputs.get(key) for key in ANALYST_KEYS}
+        payload: dict[str, Any] = {
+            "analyst_reports": reports,
+            "price_summary": price_summary,
+            "budget": {
+                "risk_profile": risk_profile,
+                "total_budget": total_budget,
+                "currency": currency,
+            },
+            "previous_recommendation": previous_recommendation,
+        }
+        return (
+            "Synthesize the following analyst reports and context into a single "
+            "proposal, and respond with the JSON object described in your "
+            "instructions. A null report means that analyst failed for this run.\n"
+            + compact_json(payload)
+        )
+
+    async def run(  # type: ignore[override]
+        self,
+        *,
+        analyst_outputs: dict[str, dict | None],
+        price_summary: dict[str, Any],
+        risk_profile: str,
+        total_budget: float,
+        currency: str,
+        previous_recommendation: dict[str, Any] | None,
+        lessons: list[str],
+        llm: LLMClient,
+    ) -> AgentResult:
+        """Run the synthesizer and return its validated proposal.
+
+        LLM-layer exceptions propagate to the orchestrator (which treats a failed
+        synthesizer as a failed run).
+        """
+        system = self.build_system_prompt(lessons)
+        user = self.build_user_prompt(
+            analyst_outputs=analyst_outputs,
+            price_summary=price_summary,
+            risk_profile=risk_profile,
+            total_budget=total_budget,
+            currency=currency,
+            previous_recommendation=previous_recommendation,
+        )
+        pref_provider, pref_model = resolve_llm_pref(self.name)
+        parsed, provider = await llm.complete_json(
+            system,
+            user,
+            temperature=self.temperature,
+            max_tokens=self.max_tokens,
+            provider=pref_provider,
+            model=pref_model,
+        )
+        output = self.validate_output(parsed)
+        return AgentResult(agent_name=self.name, output=output, provider=provider)
+
+    def validate_output(self, data: dict) -> dict:
+        """Coerce the synthesizer proposal into its schema (blueprint 5.4).
+
+        Enforces action/sizing enums with HOLD/WAIT fallbacks, clamps confidence
+        to [0, 1] and allocation_pct to [0, 100], and normalises prices, weights,
+        dissent and the Italian rationale.
+        """
+        raw = data if isinstance(data, dict) else {}
+        return {
+            "action": coerce_enum(raw.get("action"), ACTION_VALUES, Action.HOLD.value),
+            "sizing_strategy": coerce_enum(
+                raw.get("sizing_strategy"), SIZING_VALUES, Sizing.WAIT.value
+            ),
+            "confidence": clamp(coerce_float(raw.get("confidence"), 0.0), 0.0, 1.0),
+            "allocation_pct": clamp(coerce_float(raw.get("allocation_pct"), 0.0), 0.0, 100.0),
+            "horizon_days": coerce_int(raw.get("horizon_days"), 30, 1, 3650),
+            "entry_price": coerce_optional_float(raw.get("entry_price")),
+            "stop_loss_price": coerce_optional_float(raw.get("stop_loss_price")),
+            "take_profit_price": coerce_optional_float(raw.get("take_profit_price")),
+            "estimated_profit_pct": coerce_float(raw.get("estimated_profit_pct"), 0.0),
+            "agent_weights": _coerce_weights(raw.get("agent_weights")),
+            "dissent": coerce_optional_str(raw.get("dissent")),
+            "rationale_it": coerce_str(raw.get("rationale_it"), ""),
+        }
+
+
+def _coerce_weights(value: Any) -> dict[str, float]:
+    """Coerce ``agent_weights`` into the four canonical keys, each clamped to [0, 1]."""
+    raw = value if isinstance(value, dict) else {}
+    return {
+        key: clamp(coerce_float(raw.get(key), _DEFAULT_WEIGHTS[key]), 0.0, 1.0)
+        for key in ANALYST_KEYS
+    }

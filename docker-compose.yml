@@ -1,0 +1,22 @@
+services:
+  trademax:
+    build: .
+    container_name: trademax
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      # Fixed container paths/binding: override anything set in .env.
+      DB_PATH: /app/data/trademax.db
+      HOST: 0.0.0.0
+      PORT: "8000"
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=5).status==200 else 1)"]
+      interval: 60s
+      timeout: 10s
+      start_period: 30s
+      retries: 3

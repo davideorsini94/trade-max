@@ -1,0 +1,221 @@
+import { useMemo, useState } from "react";
+import { apiGet, apiPost, errorMessage, isConflict } from "../api/client";
+import type { AgentFeedbackOut, EvaluationOut } from "../api/types";
+import { useApi } from "../hooks/useApi";
+import Card from "../components/common/Card";
+import Spinner from "../components/common/Spinner";
+import ErrorBox from "../components/common/ErrorBox";
+import AccuracyTrendChart from "../components/charts/AccuracyTrendChart";
+import InfoTip from "../components/common/InfoTip";
+import { formatConfidence, formatDateTimeIt, formatNumber, formatPercent } from "../lib/format";
+import { AGENT_LABELS_IT, AGENT_ORDER, agentLabelIt } from "../lib/labels";
+import { gloss } from "../lib/glossary";
+
+interface KpiProps {
+  label: string;
+  value: string;
+  info?: string;
+}
+
+function Kpi({ label, value, info }: KpiProps) {
+  return (
+    <div className="rounded-xl border border-[var(--tm-border)] bg-[var(--tm-surface)] p-4 shadow-card">
+      <p className="flex items-center gap-1 text-xs uppercase tracking-wider text-slate-500">
+        {label}
+        {info ? <InfoTip text={info} ariaLabel={`Cosa significa: ${label}`} /> : null}
+      </p>
+      <p className="mt-1 text-lg font-semibold tabular-nums text-slate-100">{value}</p>
+    </div>
+  );
+}
+
+export default function PerformancePage() {
+  const evaluationsQuery = useApi<EvaluationOut[]>(() => apiGet<EvaluationOut[]>("/evaluations", { limit: 12 }), []);
+  const feedbackQuery = useApi<AgentFeedbackOut[]>(
+    () => apiGet<AgentFeedbackOut[]>("/feedback", { active_only: true }),
+    [],
+  );
+
+  const [running, setRunning] = useState(false);
+  const [runError, setRunError] = useState<string | null>(null);
+
+  const feedbackByAgent = useMemo(() => {
+    const map = new Map<string, AgentFeedbackOut[]>();
+    for (const item of feedbackQuery.data ?? []) {
+      const list = map.get(item.agent_name) ?? [];
+      list.push(item);
+      map.set(item.agent_name, list);
+    }
+    for (const list of map.values()) {
+      list.sort((a, b) => (a.created_at < b.created_at ? 1 : -1));
+    }
+    return map;
+  }, [feedbackQuery.data]);
+
+  async function handleRunEvaluation() {
+    if (running) return;
+    setRunning(true);
+    setRunError(null);
+    try {
+      await apiPost<EvaluationOut>("/evaluations/run");
+      evaluationsQuery.refetch();
+      feedbackQuery.refetch();
+    } catch (err) {
+      setRunError(isConflict(err) ? "Una valutazione è già in corso." : errorMessage(err));
+    } finally {
+      setRunning(false);
+    }
+  }
+
+  if (evaluationsQuery.loading) {
+    return (
+      <div className="flex justify-center py-16">
+        <Spinner size="lg" label="Caricamento performance…" />
+      </div>
+    );
+  }
+
+  if (evaluationsQuery.error) {
+    return <ErrorBox message={evaluationsQuery.error} onRetry={evaluationsQuery.refetch} />;
+  }
+
+  const latest = evaluationsQuery.data?.[0] ?? null;
+
+  return (
+    <div className="space-y-8">
+      <div className="flex flex-wrap items-center justify-between gap-4">
+        <h1 className="text-xl font-bold text-slate-50">Performance</h1>
+        <div className="flex flex-col items-end gap-1">
+          <button
+            type="button"
+            onClick={handleRunEvaluation}
+            disabled={running}
+            className="rounded-md bg-brand-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-brand-500 disabled:opacity-60"
+          >
+            {running ? <Spinner size="sm" /> : "Esegui valutazione ora"}
+          </button>
+          {runError ? <p className="text-xs text-loss-light">{runError}</p> : null}
+        </div>
+      </div>
+
+      {!latest ? (
+        <div className="rounded-xl border border-dashed border-slate-700 bg-slate-900/40 px-6 py-8 text-center text-sm text-slate-400">
+          Nessuna valutazione settimanale disponibile ancora.
+        </div>
+      ) : (
+        <>
+          <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+            <Kpi
+              label="Accuratezza"
+              value={latest.accuracy_overall !== null ? formatConfidence(latest.accuracy_overall) : "—"}
+              info={gloss("accuracy")}
+            />
+            <Kpi
+              label="Rendimento medio realizzato"
+              value={latest.avg_realized_return_pct !== null ? formatPercent(latest.avg_realized_return_pct) : "—"}
+              info={gloss("realized_return_7d")}
+            />
+            <Kpi
+              label="P&L ipotetico"
+              value={latest.hypothetical_pnl_pct !== null ? formatPercent(latest.hypothetical_pnl_pct) : "—"}
+              info={gloss("hypothetical_pnl")}
+            />
+            <Kpi
+              label="Valutate"
+              value={`${latest.evaluated_count} / ${latest.total_recommendations}`}
+              info={gloss("weekly_evaluation")}
+            />
+          </div>
+
+          {latest.report_it ? (
+            <Card title="Sintesi della valutazione">
+              <p className="text-sm leading-relaxed text-slate-300">{latest.report_it}</p>
+              <p className="mt-3 text-xs text-slate-500">
+                Periodo: {formatDateTimeIt(latest.period_start)} – {formatDateTimeIt(latest.period_end)}
+              </p>
+            </Card>
+          ) : null}
+
+          <Card title="Andamento accuratezza per agente">
+            <AccuracyTrendChart perAgent={latest.per_agent} />
+          </Card>
+
+          <Card title="Metriche per agente" padded={false}>
+            <div className="tm-scroll-x overflow-hidden">
+              <table className="w-full min-w-[36rem] border-collapse text-sm">
+                <thead>
+                  <tr className="border-b border-[var(--tm-border)] text-left text-xs uppercase tracking-wider text-slate-500">
+                    <th className="px-4 py-3 font-medium">Agente</th>
+                    <th className="px-4 py-3 font-medium text-right">
+                      <span className="inline-flex items-center gap-1">
+                        Accuratezza
+                        <InfoTip text={gloss("accuracy")} ariaLabel="Cos'è l'accuratezza" />
+                      </span>
+                    </th>
+                    <th className="px-4 py-3 font-medium text-right">
+                      <span className="inline-flex items-center gap-1">
+                        Errore medio segnale
+                        <InfoTip text={gloss("avg_signal_error")} ariaLabel="Cos'è l'errore medio del segnale" />
+                      </span>
+                    </th>
+                    <th className="px-4 py-3 font-medium text-right">
+                      <span className="inline-flex items-center gap-1">
+                        Campioni
+                        <InfoTip text={gloss("n_samples")} ariaLabel="Cosa sono i campioni" />
+                      </span>
+                    </th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[var(--tm-border)]">
+                  {latest.per_agent.map((agent) => (
+                    <tr key={agent.agent_name}>
+                      <td className="px-4 py-3 font-medium text-slate-200">{agentLabelIt(agent.agent_name)}</td>
+                      <td className="px-4 py-3 text-right tabular-nums text-slate-100">
+                        {agent.accuracy !== null ? formatConfidence(agent.accuracy) : "—"}
+                      </td>
+                      <td className="px-4 py-3 text-right tabular-nums text-slate-100">
+                        {agent.avg_signal_error !== null ? formatNumber(agent.avg_signal_error, 3) : "—"}
+                      </td>
+                      <td className="px-4 py-3 text-right tabular-nums text-slate-400">{agent.n_samples}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </Card>
+        </>
+      )}
+
+      <div>
+        <h2 className="mb-3 flex items-center gap-1 text-sm font-semibold uppercase tracking-wider text-slate-400">
+          Lezioni apprese
+          <InfoTip text={gloss("lessons")} ariaLabel="Cosa sono le lezioni apprese" />
+        </h2>
+        {feedbackQuery.loading ? (
+          <Spinner />
+        ) : feedbackQuery.error ? (
+          <ErrorBox message={feedbackQuery.error} onRetry={feedbackQuery.refetch} />
+        ) : feedbackByAgent.size === 0 ? (
+          <div className="rounded-xl border border-dashed border-slate-700 bg-slate-900/40 px-6 py-8 text-center text-sm text-slate-400">
+            Nessuna lezione attiva al momento.
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+            {AGENT_ORDER.filter((agent) => (feedbackByAgent.get(agent)?.length ?? 0) > 0).map((agent) => (
+              <Card key={agent} title={AGENT_LABELS_IT[agent]}>
+                <ul className="space-y-3">
+                  {(feedbackByAgent.get(agent) ?? []).map((item) => (
+                    <li key={item.id} className="border-b border-[var(--tm-border)] pb-3 last:border-0 last:pb-0">
+                      <p className="text-sm leading-relaxed text-slate-300">{item.lessons_it}</p>
+                      <p className="mt-1 text-xs text-slate-500">{formatDateTimeIt(item.created_at)}</p>
+                    </li>
+                  ))}
+                </ul>
+              </Card>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
