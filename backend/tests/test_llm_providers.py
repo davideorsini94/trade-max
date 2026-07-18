@@ -236,11 +236,10 @@ def test_put_trims_stored_key(client: TestClient) -> None:
 def test_test_endpoint_ok(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     client.put("/api/llm/providers", json={"openrouter_api_key": "sk-or-testkey-55667788"})
 
-    async def fake_fetch(api_key: str) -> list[LlmModelInfo]:
+    async def fake_check(api_key: str) -> None:
         assert api_key == "sk-or-testkey-55667788"
-        return [LlmModelInfo(id="openai/gpt-4o", label="GPT-4o")]
 
-    monkeypatch.setattr(llm_api, "_fetch_openrouter_models", fake_fetch)
+    monkeypatch.setattr(llm_api, "_check_openrouter_key", fake_check)
     resp = client.post("/api/llm/providers/test", json={"provider": "openrouter"})
     assert resp.status_code == 200
     body = resp.json()
@@ -271,10 +270,10 @@ def test_test_endpoint_network_failure_returns_ok_false(
 ) -> None:
     client.put("/api/llm/providers", json={"openrouter_api_key": "sk-or-netkey-12121212"})
 
-    async def boom(api_key: str) -> list[LlmModelInfo]:
+    async def boom(api_key: str) -> None:
         raise httpx.ConnectError("connection refused")
 
-    monkeypatch.setattr(llm_api, "_fetch_openrouter_models", boom)
+    monkeypatch.setattr(llm_api, "_check_openrouter_key", boom)
     resp = client.post("/api/llm/providers/test", json={"provider": "openrouter"})
     assert resp.status_code == 200
     body = resp.json()

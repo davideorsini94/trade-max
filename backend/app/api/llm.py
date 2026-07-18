@@ -110,6 +110,21 @@ def _mask_key(key: str) -> str:
 # --------------------------------------------------------------------------- #
 
 
+async def _check_openrouter_key(api_key: str) -> None:
+    """Validate an OpenRouter key against the authenticated ``auth/key`` endpoint.
+
+    The OpenRouter models list is PUBLIC (it succeeds with any or no key), so a
+    key check must hit an endpoint that actually enforces authentication.
+    Raises ``httpx.HTTPStatusError`` (401/403 on a bad key) or network errors.
+    """
+    async with httpx.AsyncClient(timeout=_UPSTREAM_TIMEOUT_S) as client:
+        response = await client.get(
+            "https://openrouter.ai/api/v1/auth/key",
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
+        response.raise_for_status()
+
+
 async def _fetch_openrouter_models(api_key: str) -> list[LlmModelInfo]:
     """Fetch OpenRouter's model catalogue (id + name), sorted by id."""
     async with httpx.AsyncClient(timeout=_UPSTREAM_TIMEOUT_S) as client:
@@ -417,7 +432,7 @@ async def test_provider(payload: LlmProviderTestRequest) -> LlmProviderTestResul
 
     try:
         if provider == "openrouter":
-            await _fetch_openrouter_models(api_key)
+            await _check_openrouter_key(api_key)
         else:
             await _fetch_gemini_models(api_key)
     except httpx.HTTPStatusError as exc:
