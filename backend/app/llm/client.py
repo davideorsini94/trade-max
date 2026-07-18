@@ -17,6 +17,15 @@ logger = logging.getLogger(__name__)
 ATTEMPTS_PER_PROVIDER = 2
 RETRY_BACKOFF_S = 2.0
 
+#: Appended to the user prompt after a malformed-JSON reply: small models
+#: (e.g. Gemma, which has no JSON mode) often answer with markdown prose on the
+#: first try but comply once told off explicitly.
+JSON_RETRY_SUFFIX = (
+    "\n\nIMPORTANT: your previous reply was NOT valid JSON. Respond with ONLY the "
+    "JSON object described in the instructions, starting with '{' and ending with "
+    "'}' - no prose, no markdown, no bullet points, no code fences."
+)
+
 
 class LLMUnavailableError(Exception):
     """Every configured provider failed; the pipeline cannot proceed."""
@@ -133,14 +142,16 @@ class LLMClient:
         # Pick up any provider/key/model change saved from the app's Settings page.
         self._sync_config()
         errors: list[str] = []
+        corrective = False
         for prov, model_override in self._resolve_order(provider, model):
             if not prov.configured:
                 errors.append(f"{prov.name}: chiave API non configurata")
                 continue
             for attempt in range(1, ATTEMPTS_PER_PROVIDER + 1):
+                user_payload = user + JSON_RETRY_SUFFIX if corrective else user
                 try:
                     text = await prov.chat(
-                        system, user, temperature, max_tokens, model=model_override
+                        system, user_payload, temperature, max_tokens, model=model_override
                     )
                     in_tokens, out_tokens = prov.last_usage or (None, None)
                     logger.info(
@@ -154,6 +165,9 @@ class LLMClient:
                 except LLMOutputError as exc:
                     errors.append(f"{prov.name} (tentativo {attempt}): {exc}")
                     logger.warning("Malformed JSON from %s (attempt %d): %s", prov.name, attempt, exc)
+                    # The next attempt (same or fallback provider) gets an
+                    # explicit only-JSON reminder appended to the user prompt.
+                    corrective = True
                 except ProviderError as exc:
                     errors.append(f"{prov.name} (tentativo {attempt}): {exc}")
                     logger.warning("Provider %s failed (attempt %d): %s", prov.name, attempt, exc)

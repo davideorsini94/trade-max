@@ -149,16 +149,32 @@ class GeminiProvider(BaseProvider):
     ) -> str:
         if not self.configured:
             raise ProviderError("gemini: GEMINI_API_KEY non configurata")
-        payload = {
-            "systemInstruction": {"parts": [{"text": system}]},
-            "contents": [{"role": "user", "parts": [{"text": user}]}],
-            "generationConfig": {
-                "temperature": temperature,
-                "maxOutputTokens": max_tokens,
-                "responseMimeType": "application/json",
-            },
-        }
-        url = self._URL_TEMPLATE.format(model=model or self.model)
+        effective_model = model or self.model
+        if "gemma" in effective_model.lower():
+            # Gemma models on the Gemini API support neither systemInstruction
+            # nor JSON mode (responseMimeType): fold the system prompt into the
+            # user turn and rely on the prompt's strict-JSON instruction plus
+            # LLMClient's corrective retry.
+            payload = {
+                "contents": [
+                    {"role": "user", "parts": [{"text": f"{system}\n\n---\n\n{user}"}]}
+                ],
+                "generationConfig": {
+                    "temperature": temperature,
+                    "maxOutputTokens": max_tokens,
+                },
+            }
+        else:
+            payload = {
+                "systemInstruction": {"parts": [{"text": system}]},
+                "contents": [{"role": "user", "parts": [{"text": user}]}],
+                "generationConfig": {
+                    "temperature": temperature,
+                    "maxOutputTokens": max_tokens,
+                    "responseMimeType": "application/json",
+                },
+            }
+        url = self._URL_TEMPLATE.format(model=effective_model)
         # The key travels in a header, not the URL, so it can never leak in logs.
         headers = {"x-goog-api-key": self.api_key}
         data = await self._post(url, headers=headers, json=payload)
