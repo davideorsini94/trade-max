@@ -31,10 +31,12 @@ def _env(**overrides: object) -> SimpleNamespace:
     values: dict[str, object] = {
         "openrouter_api_key": "",
         "gemini_api_key": "",
+        "ollama_base_url": "",
         "llm_provider": "openrouter",
         "llm_fallback_enabled": True,
         "openrouter_model": "openai/gpt-4o-mini",
         "gemini_model": "gemini-2.0-flash",
+        "ollama_model": "llama3.2:3b",
     }
     values.update(overrides)
     return SimpleNamespace(**values)

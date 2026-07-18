@@ -473,9 +473,11 @@ class LlmConfigUpdate(BaseModel):
 class LlmProviderState(BaseModel):
     """The effective state of one provider for the Settings screen.
 
-    ``source`` is ``"app"`` when the effective key comes from the DB (saved in the
-    app), ``"env"`` when it comes only from the ``.env`` fallback, or ``null`` when
-    no key is configured anywhere. ``key_masked`` never contains the full key.
+    ``source`` is ``"app"`` when the effective key/URL comes from the DB (saved in
+    the app), ``"env"`` when it comes only from the ``.env`` fallback, or ``null``
+    when nothing is configured anywhere. ``key_masked`` never contains the full key
+    and is ``null`` for keyless providers (Ollama). ``base_url`` is the effective
+    Ollama base URL (``null`` for the cloud providers).
     """
 
     provider: str
@@ -483,6 +485,7 @@ class LlmProviderState(BaseModel):
     source: Literal["app", "env"] | None
     key_masked: str | None
     default_model: str
+    base_url: str | None = None
 
 
 class LlmProvidersOut(BaseModel):
@@ -499,14 +502,17 @@ class LlmProvidersUpdate(BaseModel):
     A field ABSENT from the body leaves that setting unchanged. For the API-key
     fields, an explicit ``null`` deletes the stored key (env fallback, if any,
     remains) and a non-empty string stores the trimmed value; an empty/whitespace
-    string is rejected. ``primary_provider`` (when present and non-null) must be
-    one of ``openrouter`` / ``gemini``.
+    string is rejected. ``ollama_base_url`` follows the same absent/null/set
+    semantics (null deletes the DB override, a non-empty value must start with
+    ``http://`` or ``https://``). ``primary_provider`` (when present and non-null)
+    must be one of ``openrouter`` / ``gemini`` / ``ollama``.
     """
 
     primary_provider: str | None = None
     fallback_enabled: bool | None = None
     openrouter_api_key: str | None = None
     gemini_api_key: str | None = None
+    ollama_base_url: str | None = None
 
 
 class LlmProviderTestRequest(BaseModel):
@@ -519,4 +525,56 @@ class LlmProviderTestResult(BaseModel):
     """Result of a provider connectivity/key test (Italian user-facing detail)."""
 
     ok: bool
+    detail_it: str
+
+
+# --------------------------------------------------------------------------- #
+# Ollama local models (installed + downloadable catalog + in-app download)
+# --------------------------------------------------------------------------- #
+
+
+class OllamaLibraryInstalled(BaseModel):
+    """One model currently installed on the local Ollama server."""
+
+    id: str
+    label: str
+    size_bytes: int | None = None
+
+
+class OllamaCatalogEntry(BaseModel):
+    """One curated, downloadable Ollama model for the Settings screen."""
+
+    id: str
+    label: str
+    description_it: str
+    size_hint: str
+    installed: bool
+
+
+class OllamaLibraryOut(BaseModel):
+    """Response of ``GET /api/llm/ollama/library`` — installed + downloadable models."""
+
+    installed: list[OllamaLibraryInstalled]
+    catalog: list[OllamaCatalogEntry]
+
+
+class OllamaPullRequest(BaseModel):
+    """Body of ``POST /api/llm/ollama/pull`` — the model to download."""
+
+    model: str
+
+
+class OllamaPullStatusOut(BaseModel):
+    """Progress of an in-app Ollama model download.
+
+    ``status`` is ``idle`` (never pulled in this process), ``pulling``, ``success``
+    or ``error``; the byte counters and ``percent`` are ``null`` until Ollama
+    reports them. ``detail_it`` is an Italian human-readable status line.
+    """
+
+    model: str
+    status: Literal["idle", "pulling", "success", "error"]
+    completed_bytes: int | None = None
+    total_bytes: int | None = None
+    percent: float | None = None
     detail_it: str

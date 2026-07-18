@@ -21,7 +21,8 @@ from fastapi.staticfiles import StaticFiles
 import app.models  # noqa: F401  (register every mapped class on Base.metadata)
 from datetime import datetime
 
-from sqlalchemy import select
+from sqlalchemy import select, text
+from sqlalchemy.engine import Engine
 
 from app.api import api_router
 from app.config import get_settings
@@ -35,6 +36,41 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
+
+
+#: Columns added to existing tables after their first release, keyed by table
+#: name. ``create_all`` only creates *missing tables*, never new columns on an
+#: existing one, so a DB created by an earlier version lacks these. This tiny
+#: additive migration fills the gap (SQLite ``ADD COLUMN`` is cheap and safe).
+#: Extend this map when a new nullable column is added to an existing table.
+_ADDED_COLUMNS: dict[str, dict[str, str]] = {
+    "llm_provider_settings": {"ollama_base_url": "TEXT"},
+}
+
+
+def _ensure_columns(bind: Engine) -> None:
+    """Additively backfill columns missing from pre-existing tables.
+
+    For each table in :data:`_ADDED_COLUMNS`, read its live column set via
+    ``PRAGMA table_info`` and ``ALTER TABLE ... ADD COLUMN`` any that are absent.
+    A brand-new DB (built by ``create_all``) already has every column, so this is
+    a no-op there; it only matters for databases created before the column existed.
+    Idempotent and safe to run on every boot.
+    """
+    with bind.begin() as conn:
+        for table, columns in _ADDED_COLUMNS.items():
+            existing = {
+                row[1]  # PRAGMA table_info columns: (cid, name, type, ...)
+                for row in conn.execute(text(f"PRAGMA table_info({table})"))
+            }
+            if not existing:
+                # Table does not exist yet (fresh DB before create_all, or an
+                # unrelated table name); create_all / the model definition owns it.
+                continue
+            for name, col_type in columns.items():
+                if name not in existing:
+                    conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {col_type}"))
+                    logger.info("Migrazione DB: aggiunta colonna %s.%s", table, name)
 
 
 def _seed_settings() -> None:
@@ -69,6 +105,7 @@ def _fail_orphaned_runs() -> None:
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     Base.metadata.create_all(bind=engine)
+    _ensure_columns(engine)
     _seed_settings()
     _fail_orphaned_runs()
     from app.scheduler import setup_scheduler, shutdown_scheduler, start_scheduler

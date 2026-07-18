@@ -337,10 +337,13 @@ class LlmProviderSettings(Base):
     __tablename__ = "llm_provider_settings"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
-    # null => use env LLM_PROVIDER; otherwise "openrouter" | "gemini".
+    # null => use env LLM_PROVIDER; otherwise "openrouter" | "gemini" | "ollama".
     primary_provider: Mapped[str | None] = mapped_column(String(20), nullable=True)
     openrouter_api_key: Mapped[str | None] = mapped_column(Text, nullable=True)
     gemini_api_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # null => use env OLLAMA_BASE_URL. Not a secret (a local server URL); stored
+    # here so the Ollama endpoint can be managed from the Settings page like the keys.
+    ollama_base_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     # null => use env LLM_FALLBACK_ENABLED.
     fallback_enabled: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(

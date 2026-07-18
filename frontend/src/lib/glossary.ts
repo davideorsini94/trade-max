@@ -320,6 +320,11 @@ export const GLOSSARY: Record<string, GlossEntry> = {
     short:
       "Una password speciale che autorizza l'app a usare un provider LLM (OpenRouter o Gemini) a tuo nome. La ottieni dal sito del provider e la incolli qui: resta salvata solo sul tuo computer, nel database locale dell'app, e non viene condivisa con nessun altro.",
   },
+  ollama: {
+    term: "Ollama",
+    short:
+      "Ollama: un programma gratuito che esegue modelli di intelligenza artificiale direttamente sul tuo computer, senza chiavi API né limiti di richieste. I modelli vanno prima scaricati (occupano alcuni GB).",
+  },
 
   // --- Valutazione settimanale ---
   weekly_evaluation: {
@@ -558,6 +563,7 @@ export const GLOSSARY_SECTIONS: ReadonlyArray<{ title: string; keys: readonly st
       "llm_model",
       "llm_provider",
       "api_key",
+      "ollama",
     ],
   },
   {

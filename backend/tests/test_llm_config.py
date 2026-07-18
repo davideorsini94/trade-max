@@ -44,10 +44,13 @@ def _fake_settings(**overrides: object) -> SimpleNamespace:
         "primary_provider": "openrouter",
         "openrouter_configured": True,
         "gemini_configured": True,
+        "ollama_configured": False,
         "openrouter_model": "openai/gpt-4o-mini",
         "gemini_model": "gemini-2.0-flash",
+        "ollama_model": "llama3.2:3b",
         "openrouter_api_key": "or-key",
         "gemini_api_key": "gm-key",
+        "ollama_base_url": "",
     }
     values.update(overrides)
     return SimpleNamespace(**values)
@@ -79,12 +82,14 @@ def test_get_config_defaults(client: TestClient, monkeypatch: pytest.MonkeyPatch
     assert body["per_agent"] == {name: None for name in AGENT_NAMES}
 
     providers = {p["provider"]: p for p in body["providers"]}
-    assert set(providers) == {"openrouter", "gemini"}
+    assert set(providers) == {"openrouter", "gemini", "ollama"}
     assert providers["openrouter"]["configured"] is True
     assert providers["openrouter"]["is_primary"] is True
     assert providers["gemini"]["is_primary"] is False
+    assert providers["ollama"]["is_primary"] is False
     assert providers["openrouter"]["env_default_model"] == "openai/gpt-4o-mini"
     assert providers["gemini"]["env_default_model"] == "gemini-2.0-flash"
+    assert providers["ollama"]["env_default_model"] == "llama3.2:3b"
 
 
 def test_get_config_primary_follows_env_provider(

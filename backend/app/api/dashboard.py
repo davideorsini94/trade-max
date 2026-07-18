@@ -145,6 +145,12 @@ def health(db: Session = Depends(get_db)) -> HealthOut:
             model=config.gemini_model,
             is_primary=(primary == "gemini"),
         ),
+        ProviderStatus(
+            provider="ollama",
+            configured=config.ollama_configured,
+            model=config.ollama_model,
+            is_primary=(primary == "ollama"),
+        ),
     ]
 
     return HealthOut(

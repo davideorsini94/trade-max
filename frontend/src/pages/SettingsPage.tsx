@@ -8,6 +8,7 @@ import Spinner from "../components/common/Spinner";
 import ErrorBox from "../components/common/ErrorBox";
 import ProviderKeysCard from "../components/settings/ProviderKeysCard";
 import LlmModelsCard from "../components/settings/LlmModelsCard";
+import OllamaModelsCard from "../components/settings/OllamaModelsCard";
 import { RISK_PROFILE_DESCRIPTIONS_IT, RISK_PROFILE_LABELS_IT } from "../lib/labels";
 import { gloss } from "../lib/glossary";
 
@@ -233,6 +234,11 @@ export default function SettingsPage() {
       <ProviderKeysCard onChanged={() => setLlmRefreshToken((n) => n + 1)} />
 
       <LlmModelsCard refreshToken={llmRefreshToken} />
+
+      <OllamaModelsCard
+        refreshToken={llmRefreshToken}
+        onChanged={() => setLlmRefreshToken((n) => n + 1)}
+      />
     </div>
   );
 }

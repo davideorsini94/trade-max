@@ -20,6 +20,7 @@ import InfoTip from "../common/InfoTip";
 const PROVIDER_LABELS: Record<string, string> = {
   openrouter: "OpenRouter",
   gemini: "Gemini",
+  ollama: "Ollama (locale)",
 };
 
 function providerLabel(provider: string): string {
@@ -124,6 +125,10 @@ export default function LlmModelsCard({ refreshToken }: LlmModelsCardProps = {})
   }, [ensureModels]);
 
   useEffect(() => {
+    // A refresh (provider key saved, or an Ollama model pulled) can change which
+    // models exist per provider; drop the per-provider fetch cache so the model
+    // options — including newly installed Ollama models — reload fresh.
+    requestedRef.current = new Set();
     const cleanup = loadConfig();
     return cleanup;
   }, [loadConfig, refreshToken]);

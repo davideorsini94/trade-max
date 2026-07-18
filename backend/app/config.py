@@ -41,6 +41,10 @@ class Settings(BaseSettings):
     openrouter_model: str = Field(default="openai/gpt-4o-mini", alias="OPENROUTER_MODEL")
     gemini_api_key: str = Field(default="", alias="GEMINI_API_KEY")
     gemini_model: str = Field(default="gemini-2.0-flash", alias="GEMINI_MODEL")
+    # Local Ollama server (third provider). Empty => Ollama disabled; the base URL
+    # is not a secret. From a Docker container use http://host.docker.internal:11434.
+    ollama_base_url: str = Field(default="", alias="OLLAMA_BASE_URL")
+    ollama_model: str = Field(default="llama3.2:3b", alias="OLLAMA_MODEL")
     llm_fallback_enabled: bool = Field(default=True, alias="LLM_FALLBACK_ENABLED")
 
     # --- Persistence / server ---
@@ -69,6 +73,10 @@ class Settings(BaseSettings):
     @property
     def gemini_configured(self) -> bool:
         return bool(self.gemini_api_key.strip())
+
+    @property
+    def ollama_configured(self) -> bool:
+        return bool(self.ollama_base_url.strip())
 
 
 @lru_cache(maxsize=1)

@@ -20,20 +20,31 @@ interface ProviderKeysCardProps {
   onChanged?: () => void;
 }
 
-const PROVIDER_ORDER: readonly LlmProviderName[] = ["openrouter", "gemini"];
+/** The cloud providers that carry an API-key field (rendered as key rows). */
+type KeyProvider = "openrouter" | "gemini";
+
+/** Cloud providers that carry an API-key field (rendered as key rows). */
+const KEY_PROVIDER_ORDER: readonly KeyProvider[] = ["openrouter", "gemini"];
+/** Order of the "Provider primario" radios (Ollama is selectable too). */
+const PRIMARY_ORDER: readonly LlmProviderName[] = ["openrouter", "gemini", "ollama"];
 
 const PROVIDER_LABELS: Record<LlmProviderName, string> = {
   openrouter: "OpenRouter",
   gemini: "Gemini",
+  ollama: "Ollama (locale)",
 };
 
-/** Builds the PUT body that touches only the given provider's key. */
-function keyUpdate(provider: LlmProviderName, value: string | null): LlmProvidersUpdate {
+/** Builds the PUT body that touches only the given cloud provider's key. */
+function keyUpdate(provider: KeyProvider, value: string | null): LlmProvidersUpdate {
   return provider === "openrouter" ? { openrouter_api_key: value } : { gemini_api_key: value };
 }
 
 const inputClass =
   "w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 pr-10 text-sm text-slate-100 placeholder:text-slate-500 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500 disabled:opacity-50";
+
+/** Same as inputClass but without the right padding reserved for the reveal button. */
+const urlInputClass =
+  "w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500 disabled:opacity-50";
 
 function EyeIcon({ off }: { off: boolean }): ReactNode {
   if (off) {
@@ -70,6 +81,12 @@ export default function ProviderKeysCard({ onChanged }: ProviderKeysCardProps) {
   const [testResults, setTestResults] = useState<Record<string, LlmProviderTestOut>>({});
   const [rowError, setRowError] = useState<Record<string, string>>({});
   const [savedKey, setSavedKey] = useState<LlmProviderName | null>(null);
+
+  // Ollama (local provider): a base-URL field instead of an API key.
+  const [ollamaUrlDraft, setOllamaUrlDraft] = useState("");
+  const [savingOllamaUrl, setSavingOllamaUrl] = useState(false);
+  const [removingOllamaUrl, setRemovingOllamaUrl] = useState(false);
+  const [ollamaSaved, setOllamaSaved] = useState(false);
 
   const [prefsSaving, setPrefsSaving] = useState(false);
   const [prefsError, setPrefsError] = useState<string | null>(null);
@@ -118,7 +135,7 @@ export default function ProviderKeysCard({ onChanged }: ProviderKeysCardProps) {
     onChanged?.();
   }
 
-  async function handleSaveKey(provider: LlmProviderName) {
+  async function handleSaveKey(provider: KeyProvider) {
     const value = (drafts[provider] ?? "").trim();
     if (!value || savingKey) return;
     clearRowFeedback(provider);
@@ -135,7 +152,7 @@ export default function ProviderKeysCard({ onChanged }: ProviderKeysCardProps) {
     }
   }
 
-  async function handleRemoveKey(provider: LlmProviderName) {
+  async function handleRemoveKey(provider: KeyProvider) {
     if (removingKey) return;
     const confirmed = window.confirm(
       `Vuoi rimuovere la chiave API salvata per ${PROVIDER_LABELS[provider]}? L'app tornerà a usare l'eventuale chiave presente nel file .env, se configurata.`,
@@ -149,6 +166,42 @@ export default function ProviderKeysCard({ onChanged }: ProviderKeysCardProps) {
       setRowError((prev) => ({ ...prev, [provider]: errorMessage(err) }));
     } finally {
       setRemovingKey(null);
+    }
+  }
+
+  async function handleSaveOllamaUrl() {
+    const value = ollamaUrlDraft.trim();
+    if (!value || savingOllamaUrl) return;
+    clearRowFeedback("ollama");
+    setOllamaSaved(false);
+    setSavingOllamaUrl(true);
+    try {
+      await applyUpdate({ ollama_base_url: value });
+      setOllamaUrlDraft("");
+      setOllamaSaved(true);
+    } catch (err) {
+      setRowError((prev) => ({ ...prev, ollama: errorMessage(err) }));
+    } finally {
+      setSavingOllamaUrl(false);
+    }
+  }
+
+  async function handleRemoveOllamaUrl() {
+    if (removingOllamaUrl) return;
+    const confirmed = window.confirm(
+      "Vuoi rimuovere l'URL di Ollama configurato nell'app? L'app tornerà a usare l'eventuale URL nel file .env (OLLAMA_BASE_URL), se presente.",
+    );
+    if (!confirmed) return;
+    clearRowFeedback("ollama");
+    setOllamaSaved(false);
+    setRemovingOllamaUrl(true);
+    try {
+      await applyUpdate({ ollama_base_url: null });
+      setOllamaUrlDraft("");
+    } catch (err) {
+      setRowError((prev) => ({ ...prev, ollama: errorMessage(err) }));
+    } finally {
+      setRemovingOllamaUrl(false);
     }
   }
 
@@ -211,8 +264,7 @@ export default function ProviderKeysCard({ onChanged }: ProviderKeysCardProps) {
     </span>
   );
 
-  function renderProviderRow(info: LlmProviderKeyInfo): ReactNode {
-    const provider = info.provider;
+  function renderProviderRow(provider: KeyProvider, info: LlmProviderKeyInfo): ReactNode {
     const label = PROVIDER_LABELS[provider];
     const draft = drafts[provider] ?? "";
     const isRevealed = Boolean(reveal[provider]);
@@ -314,6 +366,101 @@ export default function ProviderKeysCard({ onChanged }: ProviderKeysCardProps) {
     );
   }
 
+  function renderOllamaBlock(info: LlmProviderKeyInfo): ReactNode {
+    const isSaving = savingOllamaUrl;
+    const isRemoving = removingOllamaUrl;
+    const isTesting = testing === "ollama";
+    const busy = isSaving || isRemoving || isTesting;
+    const test = testResults.ollama;
+    const err = rowError.ollama;
+
+    let statusBadge: ReactNode;
+    if (info.source === "app") {
+      statusBadge = <Badge variant="gain">Configurato dall'app</Badge>;
+    } else if (info.source === "env") {
+      statusBadge = <Badge variant="info">Configurato da .env</Badge>;
+    } else {
+      statusBadge = <Badge variant="neutral">Non configurato</Badge>;
+    }
+
+    return (
+      <div key="ollama" className="rounded-lg border border-[var(--tm-border)] p-4">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+          <span className="inline-flex items-center gap-1 text-sm font-semibold text-slate-100">
+            {PROVIDER_LABELS.ollama}
+            <InfoTip text={gloss("ollama")} ariaLabel="Cos'è Ollama" />
+          </span>
+          {statusBadge}
+        </div>
+        <p className="mt-1 text-xs text-slate-500">
+          URL attuale: <span className="font-mono text-slate-400">{info.base_url || "—"}</span>
+        </p>
+
+        <div className="mt-3">
+          <label htmlFor="ollama-base-url" className="sr-only">
+            URL di Ollama
+          </label>
+          <input
+            id="ollama-base-url"
+            type="text"
+            inputMode="url"
+            autoComplete="off"
+            spellCheck={false}
+            disabled={busy}
+            value={ollamaUrlDraft}
+            onChange={(event) => {
+              setOllamaUrlDraft(event.target.value);
+              setOllamaSaved(false);
+            }}
+            placeholder="URL di Ollama (es. http://localhost:11434)"
+            className={urlInputClass}
+          />
+        </div>
+
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={handleSaveOllamaUrl}
+            disabled={busy || ollamaUrlDraft.trim().length === 0}
+            className="rounded-md bg-brand-600 px-3 py-1.5 text-sm font-semibold text-white transition hover:bg-brand-500 disabled:opacity-50"
+          >
+            {isSaving ? <Spinner size="sm" /> : "Salva URL"}
+          </button>
+          <button
+            type="button"
+            onClick={handleRemoveOllamaUrl}
+            disabled={busy || info.source !== "app"}
+            className="rounded-md border border-slate-700 px-3 py-1.5 text-sm font-medium text-slate-300 transition hover:border-slate-600 hover:text-slate-100 disabled:opacity-50"
+          >
+            {isRemoving ? <Spinner size="sm" /> : "Rimuovi"}
+          </button>
+          <button
+            type="button"
+            onClick={() => handleTest("ollama")}
+            disabled={busy || !info.configured}
+            className="rounded-md border border-slate-700 px-3 py-1.5 text-sm font-medium text-slate-300 transition hover:border-slate-600 hover:text-slate-100 disabled:opacity-50"
+          >
+            {isTesting ? <Spinner size="sm" label="Verifica…" /> : "Prova connessione"}
+          </button>
+          {ollamaSaved ? <span className="text-sm font-medium text-gain-light">URL salvato</span> : null}
+        </div>
+
+        {test ? (
+          <p className={`mt-2 text-xs ${test.ok ? "text-gain-light" : "text-loss-light"}`}>
+            {test.ok ? "✓ " : "✗ "}
+            {test.detail_it}
+          </p>
+        ) : null}
+        {err ? <p className="mt-2 text-xs text-loss-light">{err}</p> : null}
+
+        <p className="mt-3 text-xs leading-relaxed text-slate-500">
+          Ollama gira sul tuo computer: gratuito e senza limiti di richieste. Se l'app gira in Docker usa
+          http://host.docker.internal:11434.
+        </p>
+      </div>
+    );
+  }
+
   let body: ReactNode;
   if (loading) {
     body = <Spinner label="Caricamento provider…" />;
@@ -322,9 +469,7 @@ export default function ProviderKeysCard({ onChanged }: ProviderKeysCardProps) {
   } else {
     const infoByProvider = new Map<LlmProviderName, LlmProviderKeyInfo>();
     for (const p of data.providers) infoByProvider.set(p.provider, p);
-    const rows = PROVIDER_ORDER.map((provider) => infoByProvider.get(provider)).filter(
-      (info): info is LlmProviderKeyInfo => Boolean(info),
-    );
+    const ollamaInfo = infoByProvider.get("ollama") ?? null;
 
     body = (
       <div className="space-y-6">
@@ -333,7 +478,13 @@ export default function ProviderKeysCard({ onChanged }: ProviderKeysCardProps) {
           nel database locale dell'app.
         </p>
 
-        <div className="space-y-3">{rows.map(renderProviderRow)}</div>
+        <div className="space-y-3">
+          {KEY_PROVIDER_ORDER.map((provider) => {
+            const info = infoByProvider.get(provider);
+            return info ? renderProviderRow(provider, info) : null;
+          })}
+          {ollamaInfo ? renderOllamaBlock(ollamaInfo) : null}
+        </div>
 
         <div className="space-y-4 border-t border-[var(--tm-border)] pt-5">
           <fieldset>
@@ -342,7 +493,7 @@ export default function ProviderKeysCard({ onChanged }: ProviderKeysCardProps) {
               <InfoTip text={gloss("llm_provider")} ariaLabel="Cos'è un provider LLM" />
             </legend>
             <div className="flex flex-wrap gap-3">
-              {PROVIDER_ORDER.map((provider) => (
+              {PRIMARY_ORDER.map((provider) => (
                 <label
                   key={provider}
                   className={`flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-2 text-sm transition ${

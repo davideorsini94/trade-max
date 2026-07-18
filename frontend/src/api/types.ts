@@ -377,12 +377,14 @@ export interface LlmConfigUpdate {
 
 // --- LLM provider keys (Settings) ---
 
-export type LlmProviderName = "openrouter" | "gemini";
+export type LlmProviderName = "openrouter" | "gemini" | "ollama";
 
 /**
  * Configured state of a single LLM provider.
- * source: "app" when the key comes from the DB, "env" when only from .env,
- * null when absent. key_masked never contains the full key.
+ * source: "app" when the key/URL comes from the DB, "env" when only from .env,
+ * null when absent. key_masked never contains the full key and is null for the
+ * local Ollama provider (which has no API key). base_url is the effective Ollama
+ * endpoint (null for the cloud providers).
  */
 export interface LlmProviderKeyInfo {
   provider: LlmProviderName;
@@ -390,6 +392,7 @@ export interface LlmProviderKeyInfo {
   source: "app" | "env" | null;
   key_masked: string | null;
   default_model: string;
+  base_url: string | null;
 }
 
 export interface LlmProvidersOut {
@@ -408,9 +411,43 @@ export interface LlmProvidersUpdate {
   fallback_enabled?: boolean;
   openrouter_api_key?: string | null;
   gemini_api_key?: string | null;
+  /** Ollama endpoint: absent = unchanged, null = delete DB override (env fallback), non-empty = store trimmed. */
+  ollama_base_url?: string | null;
 }
 
 export interface LlmProviderTestOut {
   ok: boolean;
+  detail_it: string;
+}
+
+// --- Ollama (local provider) library & downloads ---
+
+/** A model already installed locally in Ollama (from GET {base}/api/tags). */
+export interface OllamaInstalledModel {
+  id: string;
+  label: string;
+  size_bytes: number | null;
+}
+
+/** A curated, downloadable model from the static catalog. */
+export interface OllamaCatalogModel {
+  id: string;
+  label: string;
+  description_it: string;
+  size_hint: string;
+  installed: boolean;
+}
+
+export interface OllamaLibraryOut {
+  installed: OllamaInstalledModel[];
+  catalog: OllamaCatalogModel[];
+}
+
+export interface OllamaPullStatusOut {
+  model: string;
+  status: "idle" | "pulling" | "success" | "error";
+  completed_bytes: number | null;
+  total_bytes: number | null;
+  percent: number | null;
   detail_it: string;
 }

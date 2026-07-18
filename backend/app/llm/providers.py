@@ -1,6 +1,6 @@
 """LLM provider adapters over httpx (blueprint 5.1).
 
-Two providers with one tiny common interface: send a (system, user) pair,
+Three providers with one tiny common interface: send a (system, user) pair,
 get raw text back. Everything JSON-related happens one layer up in
 ``LLMClient``; everything HTTP-related is contained here.
 """
@@ -10,6 +10,9 @@ from __future__ import annotations
 import httpx
 
 REQUEST_TIMEOUT_S = 60.0
+#: Local Ollama models run on the user's own hardware and can be much slower than
+#: hosted APIs, so the Ollama provider gets a far longer per-request timeout.
+OLLAMA_REQUEST_TIMEOUT_S = 120.0
 
 
 class ProviderError(Exception):
@@ -73,10 +76,10 @@ class BaseProvider:
 
     name: str = "base"
 
-    def __init__(self, api_key: str, model: str):
+    def __init__(self, api_key: str, model: str, *, timeout: float = REQUEST_TIMEOUT_S):
         self.api_key = api_key
         self.model = model
-        self._client = httpx.AsyncClient(timeout=REQUEST_TIMEOUT_S)
+        self._client = httpx.AsyncClient(timeout=timeout)
         # (prompt_tokens, completion_tokens) of the most recent successful chat,
         # or None when the provider did not report usage. Set synchronously right
         # before ``chat`` returns, so ``LLMClient`` can read it immediately after
@@ -97,13 +100,23 @@ class BaseProvider:
     ) -> str:
         raise NotImplementedError
 
+    def _network_error(self, exc: Exception, *, timeout: bool) -> ProviderError:
+        """Build the ``ProviderError`` for a transport failure (overridable).
+
+        Providers whose failure mode has a more helpful message (e.g. a local
+        Ollama server that is simply not running) override this.
+        """
+        if timeout:
+            return ProviderError(f"{self.name}: timeout", retryable=True)
+        return ProviderError(f"{self.name}: network error: {exc}", retryable=True)
+
     async def _post(self, url: str, *, headers: dict | None = None, json: dict) -> dict:
         try:
             response = await self._client.post(url, headers=headers, json=json)
         except httpx.TimeoutException as exc:
-            raise ProviderError(f"{self.name}: timeout", retryable=True) from exc
+            raise self._network_error(exc, timeout=True) from exc
         except httpx.HTTPError as exc:
-            raise ProviderError(f"{self.name}: network error: {exc}", retryable=True) from exc
+            raise self._network_error(exc, timeout=False) from exc
 
         if response.status_code == 429:
             raise ProviderError(
@@ -236,6 +249,73 @@ class GeminiProvider(BaseProvider):
         self.last_usage = (
             (usage.get("promptTokenCount"), usage.get("candidatesTokenCount"))
             if isinstance(usage, dict)
+            else None
+        )
+        return content
+
+
+class OllamaProvider(BaseProvider):
+    """Local Ollama server via its native ``/api/chat`` endpoint.
+
+    Unlike the hosted providers there is no API key: ``configured`` tracks whether
+    a base URL is set, and ``base_url``/``model`` are plain attributes so
+    :class:`~app.llm.client.LLMClient` can update them in place on a config change.
+    """
+
+    name = "ollama"
+
+    def __init__(self, base_url: str, model: str):
+        # No API key for a local server; a longer timeout because local models
+        # are slow. ``base_url`` (not ``api_key``) gates ``configured``.
+        super().__init__("", model, timeout=OLLAMA_REQUEST_TIMEOUT_S)
+        self.base_url = base_url
+
+    @property
+    def configured(self) -> bool:
+        return bool(self.base_url.strip())
+
+    def _base(self) -> str:
+        """The base URL without a trailing slash (never carries credentials)."""
+        return self.base_url.strip().rstrip("/")
+
+    def _network_error(self, exc: Exception, *, timeout: bool) -> ProviderError:
+        # A local server that is down/unreachable is the common case; name the URL
+        # so the user knows exactly what to check. Retryable like other transport
+        # errors (a fallback provider may still succeed).
+        return ProviderError(f"ollama: non raggiungibile su {self._base()}", retryable=True)
+
+    async def chat(
+        self,
+        system: str,
+        user: str,
+        temperature: float,
+        max_tokens: int,
+        model: str | None = None,
+    ) -> str:
+        if not self.configured:
+            raise ProviderError("ollama: OLLAMA_BASE_URL non configurata")
+        payload = {
+            "model": model or self.model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "stream": False,
+            "format": "json",
+            "options": {"temperature": temperature, "num_predict": max_tokens},
+        }
+        data = await self._post(f"{self._base()}/api/chat", json=payload)
+        try:
+            content = data["message"]["content"]
+        except (KeyError, IndexError, TypeError) as exc:
+            raise ProviderError(
+                f"ollama: unexpected response shape: {str(data)[:300]}", retryable=True
+            ) from exc
+        if not isinstance(content, str) or not content.strip():
+            raise ProviderError("ollama: empty completion content", retryable=True)
+        self.last_usage = (
+            (data.get("prompt_eval_count"), data.get("eval_count"))
+            if isinstance(data, dict)
             else None
         )
         return content

@@ -39,12 +39,16 @@ class EffectiveLlmConfig:
     primary_provider: str
     openrouter_api_key: str
     gemini_api_key: str
+    #: Local Ollama base URL ("" => Ollama disabled). Not a secret.
+    ollama_base_url: str
     openrouter_model: str
     gemini_model: str
+    ollama_model: str
     fallback_enabled: bool
-    #: Where each effective key came from: "app" (DB), "env" (.env), or None (absent).
+    #: Where each effective key/URL came from: "app" (DB), "env" (.env), or None (absent).
     openrouter_source: Source
     gemini_source: Source
+    ollama_source: Source
 
     @property
     def openrouter_configured(self) -> bool:
@@ -53,6 +57,10 @@ class EffectiveLlmConfig:
     @property
     def gemini_configured(self) -> bool:
         return bool(self.gemini_api_key.strip())
+
+    @property
+    def ollama_configured(self) -> bool:
+        return bool(self.ollama_base_url.strip())
 
 
 # Cache guarded by ``_lock``; ``_generation`` is bumped on every invalidation and
@@ -81,12 +89,14 @@ def _compute_effective() -> EffectiveLlmConfig:
     settings = get_settings()
     env_openrouter = settings.openrouter_api_key or ""
     env_gemini = settings.gemini_api_key or ""
+    env_ollama = settings.ollama_base_url or ""
     env_primary = settings.llm_provider
     env_fallback = settings.llm_fallback_enabled
 
     db_primary: str | None = None
     db_openrouter: str | None = None
     db_gemini: str | None = None
+    db_ollama: str | None = None
     db_fallback: bool | None = None
     try:
         with session_scope() as db:
@@ -95,15 +105,19 @@ def _compute_effective() -> EffectiveLlmConfig:
                 db_primary = row.primary_provider
                 db_openrouter = row.openrouter_api_key
                 db_gemini = row.gemini_api_key
+                db_ollama = row.ollama_base_url
                 db_fallback = row.fallback_enabled
     except Exception:  # pragma: no cover - defensive
         logger.warning(
             "Lettura impostazioni provider LLM dal DB fallita; uso solo .env", exc_info=True
         )
-        db_primary = db_openrouter = db_gemini = db_fallback = None
+        db_primary = db_openrouter = db_gemini = db_ollama = db_fallback = None
 
     openrouter_key, openrouter_source = _resolve_key(db_openrouter, env_openrouter)
     gemini_key, gemini_source = _resolve_key(db_gemini, env_gemini)
+    # The Ollama base URL merges DB-over-env exactly like the API keys, even though
+    # it is not a secret ("app" when saved in the DB, "env" from .env, else None).
+    ollama_url, ollama_source = _resolve_key(db_ollama, env_ollama)
 
     primary = db_primary if (db_primary and db_primary.strip()) else env_primary
     primary = (primary or "openrouter").strip().lower()
@@ -113,11 +127,14 @@ def _compute_effective() -> EffectiveLlmConfig:
         primary_provider=primary,
         openrouter_api_key=openrouter_key,
         gemini_api_key=gemini_key,
+        ollama_base_url=ollama_url,
         openrouter_model=settings.openrouter_model,
         gemini_model=settings.gemini_model,
+        ollama_model=settings.ollama_model,
         fallback_enabled=bool(fallback),
         openrouter_source=openrouter_source,
         gemini_source=gemini_source,
+        ollama_source=ollama_source,
     )
 
 

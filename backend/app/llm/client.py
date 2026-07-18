@@ -7,7 +7,13 @@ import logging
 from typing import TYPE_CHECKING
 
 from app.llm.json_utils import LLMOutputError, extract_json
-from app.llm.providers import BaseProvider, GeminiProvider, OpenRouterProvider, ProviderError
+from app.llm.providers import (
+    BaseProvider,
+    GeminiProvider,
+    OllamaProvider,
+    OpenRouterProvider,
+    ProviderError,
+)
 
 if TYPE_CHECKING:
     from app.llm.runtime import EffectiveLlmConfig
@@ -78,12 +84,16 @@ class LLMClient:
     """
 
     def __init__(self, config: "EffectiveLlmConfig | None" = None):
-        # Provider shells; api_key/model are (re)assigned by ``_apply_config``.
+        # Provider shells; api_key/base_url/model are (re)assigned by ``_apply_config``.
         self._openrouter = OpenRouterProvider("", "")
         self._gemini = GeminiProvider("", "")
+        self._ollama = OllamaProvider("", "")
+        # Insertion order doubles as the canonical fallback order for providers
+        # other than the primary.
         self._by_name: dict[str, BaseProvider] = {
             self._openrouter.name: self._openrouter,
             self._gemini.name: self._gemini,
+            self._ollama.name: self._ollama,
         }
         self._fallback_enabled = True
         self.providers: list[BaseProvider] = [self._openrouter]
@@ -98,21 +108,24 @@ class LLMClient:
             self._sync_config()
 
     def _apply_config(self, config: "EffectiveLlmConfig") -> None:
-        """Update provider keys/models and the primary→fallback ordering in place."""
+        """Update provider keys/URL/models and the primary→fallback ordering in place."""
         self._openrouter.api_key = config.openrouter_api_key
         self._openrouter.model = config.openrouter_model
         self._gemini.api_key = config.gemini_api_key
         self._gemini.model = config.gemini_model
+        self._ollama.base_url = config.ollama_base_url
+        self._ollama.model = config.ollama_model
         self._fallback_enabled = config.fallback_enabled
-        ordered = (
-            [self._gemini, self._openrouter]
-            if config.primary_provider == "gemini"
-            else [self._openrouter, self._gemini]
-        )
-        primary, fallback = ordered
+        # Effective primary first (default to openrouter for an unknown value),
+        # then every OTHER configured provider in canonical order when fallback is
+        # enabled. The primary is always kept at the head even if unconfigured —
+        # ``complete_json`` skips unconfigured providers with a clear error.
+        primary = self._by_name.get(config.primary_provider, self._openrouter)
         self.providers = [primary]
-        if config.fallback_enabled and fallback.configured:
-            self.providers.append(fallback)
+        if config.fallback_enabled:
+            for prov in self._by_name.values():
+                if prov is not primary and prov.configured:
+                    self.providers.append(prov)
 
     def _sync_config(self) -> None:
         """Re-sync providers from the effective config when the generation changed.
@@ -135,19 +148,22 @@ class LLMClient:
         """Ordered ``(provider, model_override)`` attempts for one call.
 
         With no per-call ``provider``, this is the env-configured default ordering
-        (primary, then fallback when enabled) with no model override. When
-        ``provider`` names a known provider, it is tried FIRST with ``model``
-        overriding its default model for this call, and the other provider is
-        appended as a fallback (its own default model) subject to the same
-        fallback/configured rules as the default ordering.
+        (primary, then every other configured provider when fallback is enabled)
+        with no model override. When ``provider`` names a known provider, it is
+        tried FIRST with ``model`` overriding its default model for this call; then,
+        when fallback is enabled, the effective primary and every other configured
+        provider follow (each with its own default model). Duplicates are removed
+        while preserving order.
         """
         if provider is not None and provider in self._by_name:
             preferred = self._by_name[provider]
             order: list[tuple[BaseProvider, str | None]] = [(preferred, model)]
             if self._fallback_enabled:
-                other = self._gemini if preferred is self._openrouter else self._openrouter
-                if other.configured:
-                    order.append((other, None))
+                # ``self.providers`` is already "primary, then other configured
+                # providers"; drop the preferred one (tried first above).
+                for prov in self.providers:
+                    if prov is not preferred and prov.configured:
+                        order.append((prov, None))
             return order
         return [(prov, None) for prov in self.providers]
 

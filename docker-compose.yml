@@ -11,6 +11,13 @@ services:
       DB_PATH: /app/data/trademax.db
       HOST: 0.0.0.0
       PORT: "8000"
+      # Container-appropriate default so a host-side Ollama server is reachable
+      # from inside the container. Can still be overridden from the app's Settings
+      # page (the DB override wins over this env value).
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
+    # Make host.docker.internal resolve on Linux too (native on Docker Desktop).
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./data:/app/data
     restart: unless-stopped
