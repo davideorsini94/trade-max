@@ -19,10 +19,14 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 import app.models  # noqa: F401  (register every mapped class on Base.metadata)
+from datetime import datetime
+
+from sqlalchemy import select
+
 from app.api import api_router
 from app.config import get_settings
 from app.db import Base, engine, session_scope
-from app.models import AppSettings
+from app.models import AnalysisRun, AppSettings
 
 logging.basicConfig(
     level=logging.INFO,
@@ -41,10 +45,32 @@ def _seed_settings() -> None:
             logger.info("Seeded default app_settings (id=1)")
 
 
+def _fail_orphaned_runs() -> None:
+    """Mark runs left PENDING/RUNNING by a previous process as FAILED.
+
+    Runs execute as in-process asyncio tasks: none can survive a restart, so
+    anything still in-flight at boot is an orphan. Without this, the UI would
+    show "Analisi in corso…" forever for a run that no process is executing.
+    """
+    with session_scope() as db:
+        stale = (
+            db.execute(select(AnalysisRun).where(AnalysisRun.status.in_(("PENDING", "RUNNING"))))
+            .scalars()
+            .all()
+        )
+        for run in stale:
+            run.status = "FAILED"
+            run.error = "Analisi interrotta da un riavvio dell'applicazione. Riprova."
+            run.finished_at = datetime.utcnow()
+        if stale:
+            logger.info("Marcate FAILED %d run orfane di processi precedenti", len(stale))
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     Base.metadata.create_all(bind=engine)
     _seed_settings()
+    _fail_orphaned_runs()
     from app.scheduler import setup_scheduler, shutdown_scheduler, start_scheduler
 
     setup_scheduler()
