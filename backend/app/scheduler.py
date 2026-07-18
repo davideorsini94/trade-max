@@ -49,6 +49,9 @@ _JOB_DEFAULTS: dict = {
     "misfire_grace_time": 3600,
 }
 
+# Pause between scheduled per-symbol analyses (free-tier LLM rate limits).
+_INTER_SYMBOL_PAUSE_S = 20.0
+
 # Module-level scheduler; ``dashboard`` reads ``scheduler.running``.
 scheduler = AsyncIOScheduler(timezone=APP_TZ)
 
@@ -207,7 +210,11 @@ async def _run_scheduled_analyses(favorites: bool, interval_hours: int, job_id: 
     # Lazy import: the engine package is built separately and may be absent.
     from app.engine.orchestrator import run_analysis
 
-    for symbol_id, ticker in candidates:
+    for index, (symbol_id, ticker) in enumerate(candidates):
+        if index > 0:
+            # Pace scheduled runs: back-to-back symbols (6 LLM calls each) are
+            # exactly the burst shape that trips free-tier provider rate limits.
+            await asyncio.sleep(_INTER_SYMBOL_PAUSE_S)
         try:
             await run_analysis(symbol_id, trigger="SCHEDULED")
         except Exception:

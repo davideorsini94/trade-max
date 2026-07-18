@@ -16,13 +16,51 @@ class ProviderError(Exception):
     """A provider call failed (network error, non-2xx, malformed envelope).
 
     ``retryable`` marks failures worth retrying on the same provider
-    (429/5xx/timeouts); auth or request errors (4xx) are not.
+    (429/5xx/timeouts); auth or request errors (4xx) are not. For rate limits
+    ``retry_after`` carries the wait (seconds) the provider asked for, when it
+    said so (Gemini RetryInfo / Retry-After header).
     """
 
-    def __init__(self, message: str, *, status: int | None = None, retryable: bool = False):
+    def __init__(
+        self,
+        message: str,
+        *,
+        status: int | None = None,
+        retryable: bool = False,
+        retry_after: float | None = None,
+    ):
         super().__init__(message)
         self.status = status
         self.retryable = retryable
+        self.retry_after = retry_after
+
+
+def parse_retry_after(response: httpx.Response) -> float | None:
+    """Extract the provider-requested retry delay (seconds) from a 429 response.
+
+    Checks the standard ``Retry-After`` header first, then Gemini's
+    ``error.details[].retryDelay`` (a string like ``"26s"``). ``None`` when the
+    provider did not say.
+    """
+    header = response.headers.get("retry-after")
+    if header:
+        try:
+            return max(0.0, float(header))
+        except ValueError:
+            pass
+    try:
+        data = response.json()
+        details = data["error"]["details"]
+    except Exception:
+        return None
+    for item in details if isinstance(details, list) else []:
+        delay = item.get("retryDelay") if isinstance(item, dict) else None
+        if isinstance(delay, str) and delay.endswith("s"):
+            try:
+                return max(0.0, float(delay[:-1]))
+            except ValueError:
+                continue
+    return None
 
 
 def _classify_status(status: int) -> bool:
@@ -67,6 +105,13 @@ class BaseProvider:
         except httpx.HTTPError as exc:
             raise ProviderError(f"{self.name}: network error: {exc}", retryable=True) from exc
 
+        if response.status_code == 429:
+            raise ProviderError(
+                f"{self.name}: HTTP 429 (limite di richieste o quota del provider superati)",
+                status=429,
+                retryable=True,
+                retry_after=parse_retry_after(response),
+            )
         if response.status_code >= 400:
             raise ProviderError(
                 f"{self.name}: HTTP {response.status_code}: {response.text[:300]}",

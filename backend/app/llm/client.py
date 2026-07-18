@@ -15,7 +15,36 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 ATTEMPTS_PER_PROVIDER = 2
+#: Rate-limited calls (HTTP 429) get one extra try: with the provider-declared
+#: retry delay honoured, a third attempt usually lands.
+RATE_LIMIT_ATTEMPTS = 3
 RETRY_BACKOFF_S = 2.0
+#: Never wait longer than this for a provider-declared retry delay.
+MAX_RETRY_AFTER_S = 65.0
+
+#: App-wide cap on concurrent LLM calls: free-tier providers throttle bursts
+#: (4 analysts in parallel × retries was enough to trip Gemini's free RPM).
+LLM_MAX_CONCURRENCY = 2
+
+# Monkeypatchable in tests (avoids real waits).
+_sleep = asyncio.sleep
+
+_semaphore: asyncio.Semaphore | None = None
+_semaphore_loop: asyncio.AbstractEventLoop | None = None
+
+
+def _get_semaphore() -> asyncio.Semaphore:
+    """Per-event-loop global semaphore bounding concurrent LLM calls.
+
+    Recreated when the running loop changes (tests spin up many loops); in the
+    single-loop production process it is effectively a module singleton.
+    """
+    global _semaphore, _semaphore_loop
+    loop = asyncio.get_running_loop()
+    if _semaphore is None or _semaphore_loop is not loop:
+        _semaphore = asyncio.Semaphore(LLM_MAX_CONCURRENCY)
+        _semaphore_loop = loop
+    return _semaphore
 
 #: Appended to the user prompt after a malformed-JSON reply: small models
 #: (e.g. Gemma, which has no JSON mode) often answer with markdown prose on the
@@ -147,12 +176,20 @@ class LLMClient:
             if not prov.configured:
                 errors.append(f"{prov.name}: chiave API non configurata")
                 continue
-            for attempt in range(1, ATTEMPTS_PER_PROVIDER + 1):
+            attempt = 0
+            max_attempts = ATTEMPTS_PER_PROVIDER
+            while attempt < max_attempts:
+                attempt += 1
                 user_payload = user + JSON_RETRY_SUFFIX if corrective else user
+                wait_s = RETRY_BACKOFF_S * attempt
                 try:
-                    text = await prov.chat(
-                        system, user_payload, temperature, max_tokens, model=model_override
-                    )
+                    # The semaphore bounds bursts app-wide (parallel analysts ×
+                    # retries trip free-tier rate limits); it is held only for
+                    # the network call, never while sleeping.
+                    async with _get_semaphore():
+                        text = await prov.chat(
+                            system, user_payload, temperature, max_tokens, model=model_override
+                        )
                     in_tokens, out_tokens = prov.last_usage or (None, None)
                     logger.info(
                         "LLM call ok: provider=%s model=%s prompt_tokens=%s completion_tokens=%s",
@@ -173,8 +210,14 @@ class LLMClient:
                     logger.warning("Provider %s failed (attempt %d): %s", prov.name, attempt, exc)
                     if not exc.retryable:
                         break  # auth/request error: same provider won't recover
-                if attempt < ATTEMPTS_PER_PROVIDER:
-                    await asyncio.sleep(RETRY_BACKOFF_S * attempt)
+                    if exc.status == 429:
+                        # Rate limited: honour the provider-declared delay and
+                        # grant the extra attempt.
+                        max_attempts = max(max_attempts, RATE_LIMIT_ATTEMPTS)
+                        if exc.retry_after is not None:
+                            wait_s = min(exc.retry_after + 1.0, MAX_RETRY_AFTER_S)
+                if attempt < max_attempts:
+                    await _sleep(wait_s)
         raise LLMUnavailableError(
             "Nessun provider LLM disponibile: " + " | ".join(errors[-4:])
         )

@@ -585,10 +585,21 @@ async def _run_analysis_locked(symbol_id: int, trigger: str, run_id: int | None)
                     )
 
         if failed >= _MIN_FAILED_ANALYSTS_TO_ABORT:
-            _safe_fail(
-                run_id,
-                f"Analisi interrotta: {failed} analisti su {len(ANALYST_AGENTS)} hanno fallito.",
+            rate_limited = any(
+                isinstance(result, BaseException) and "429" in _err_text(result)
+                for result in results_by_name.values()
             )
+            if rate_limited:
+                message = (
+                    "Analisi interrotta: raggiunto il limite di richieste del provider "
+                    "LLM (HTTP 429). Attendi qualche minuto e riprova, oppure scegli un "
+                    "modello o un piano con limiti più alti dalle Impostazioni."
+                )
+            else:
+                message = (
+                    f"Analisi interrotta: {failed} analisti su {len(ANALYST_AGENTS)} hanno fallito."
+                )
+            _safe_fail(run_id, message)
             return run_id
 
         # Slimmed copy for the actors' prompts (drops UI-only summary_it); the
