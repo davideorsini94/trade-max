@@ -22,7 +22,7 @@ import SymbolOverview from "../components/symbols/SymbolOverview";
 import RecommendationCard from "../components/recommendations/RecommendationCard";
 import AgentBreakdown from "../components/recommendations/AgentBreakdown";
 import RecommendationTimeline from "../components/recommendations/RecommendationTimeline";
-import { RUN_STATUS_LABELS_IT } from "../lib/labels";
+import RunProgress from "../components/recommendations/RunProgress";
 
 export default function SymbolDetailPage() {
   const { ticker } = useParams<{ ticker: string }>();
@@ -79,6 +79,7 @@ export default function SymbolDetailPage() {
   const [runPollingEnabled, setRunPollingEnabled] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
   const [analyzeError, setAnalyzeError] = useState<string | null>(null);
+  const [analyzeInfo, setAnalyzeInfo] = useState<string | null>(null);
 
   const runPolling = usePolling<AnalysisRunOut | null>(
     () => {
@@ -99,6 +100,40 @@ export default function SymbolDetailPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runPolling.data?.status, runPolling.data?.id]);
 
+  // Detect an in-flight run on mount / when re-entering the page: the run_id is
+  // otherwise only known to the tab that clicked "Analizza ora", so navigating
+  // away and back would lose all progress feedback.
+  const latestRunQuery = useApi<AnalysisRunOut | null>(async () => {
+    if (symbolId === null) return null;
+    try {
+      return await apiGet<AnalysisRunOut>(`/symbols/${symbolId}/runs/latest`);
+    } catch (err) {
+      if (isNotFound(err)) return null;
+      throw err;
+    }
+  }, [symbolId]);
+
+  // Clear any run state carried over from a previously viewed symbol before
+  // resuming this symbol's own in-flight run (the component instance is reused
+  // across ticker route changes).
+  useEffect(() => {
+    setActiveRunId(null);
+    setRunPollingEnabled(false);
+    setAnalyzeError(null);
+    setAnalyzeInfo(null);
+  }, [symbolId]);
+
+  // Resume polling for a run that is still PENDING/RUNNING for this symbol.
+  useEffect(() => {
+    const latest = latestRunQuery.data;
+    if (!latest || latest.symbol_id !== symbolId) return;
+    if ((latest.status === "PENDING" || latest.status === "RUNNING") && activeRunId === null) {
+      setActiveRunId(latest.id);
+      setRunPollingEnabled(true);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [latestRunQuery.data, symbolId]);
+
   const lastRunQuery = useApi<AnalysisRunOut | null>(() => {
     if (activeRunId !== null) return Promise.resolve(null);
     const runId = latestRecoPolling.data?.run_id;
@@ -106,18 +141,48 @@ export default function SymbolDetailPage() {
     return apiGet<AnalysisRunOut>(`/runs/${runId}`);
   }, [activeRunId, latestRecoPolling.data?.run_id]);
 
-  const displayedRun = activeRunId !== null ? runPolling.data : lastRunQuery.data;
+  // The run currently being tracked: the freshest data available for activeRunId
+  // (live poll, else the mount fetch that seeded the resume), matched by id so a
+  // stale run from another symbol is never shown.
+  const activeRun =
+    activeRunId === null
+      ? null
+      : runPolling.data?.id === activeRunId
+        ? runPolling.data
+        : latestRunQuery.data?.id === activeRunId
+          ? latestRunQuery.data
+          : null;
+
+  const displayedRun = activeRunId !== null ? activeRun : lastRunQuery.data;
 
   async function handleAnalyze() {
     if (symbolId === null || analyzing) return;
     setAnalyzing(true);
     setAnalyzeError(null);
+    setAnalyzeInfo(null);
     try {
       const accepted = await apiPost<AnalyzeAccepted>(`/symbols/${symbolId}/analyze`, { trigger: "MANUAL" });
       setActiveRunId(accepted.run_id);
       setRunPollingEnabled(true);
     } catch (err) {
-      setAnalyzeError(isConflict(err) ? "Un'analisi per questo titolo è già in corso." : errorMessage(err));
+      if (isConflict(err)) {
+        // An analysis is already running: recover its run and resume its
+        // progress instead of only reporting the conflict.
+        try {
+          const latest = await apiGet<AnalysisRunOut>(`/symbols/${symbolId}/runs/latest`);
+          if (latest.status === "PENDING" || latest.status === "RUNNING") {
+            setActiveRunId(latest.id);
+            setRunPollingEnabled(true);
+            setAnalyzeInfo("Un'analisi era già in corso: ecco lo stato.");
+          } else {
+            setAnalyzeError("Un'analisi per questo titolo è già in corso.");
+          }
+        } catch {
+          setAnalyzeError("Un'analisi per questo titolo è già in corso.");
+        }
+      } else {
+        setAnalyzeError(errorMessage(err));
+      }
     } finally {
       setAnalyzing(false);
     }
@@ -147,7 +212,8 @@ export default function SymbolDetailPage() {
   }
 
   const currency = symbol.currency;
-  const runInProgress = activeRunId !== null && runPollingEnabled;
+  const activeRunInFlight = activeRun?.status === "PENDING" || activeRun?.status === "RUNNING";
+  const runInProgress = (activeRunId !== null && runPollingEnabled) || activeRunInFlight;
   const runStatus = displayedRun?.status;
 
   return (
@@ -169,12 +235,12 @@ export default function SymbolDetailPage() {
           >
             {analyzing ? <Spinner size="sm" /> : runInProgress ? "Analisi in corso…" : "Analizza ora"}
           </button>
-          {runInProgress && runStatus ? (
-            <span className="text-xs text-slate-400">Stato: {RUN_STATUS_LABELS_IT[runStatus]}</span>
-          ) : null}
+          {analyzeInfo ? <p className="max-w-xs text-right text-xs text-brand-300">{analyzeInfo}</p> : null}
           {analyzeError ? <p className="max-w-xs text-right text-xs text-loss-light">{analyzeError}</p> : null}
         </div>
       </div>
+
+      {activeRun ? <RunProgress run={activeRun} /> : null}
 
       {overviewPolling.data ? (
         <SymbolOverview overview={overviewPolling.data} />

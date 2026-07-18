@@ -126,6 +126,29 @@ async def trigger_analysis(
     )
 
 
+def _serialize_run(run: AnalysisRun, db: Session) -> AnalysisRunOut:
+    """Load a run's ticker, analyses and recommendation, then build its schema.
+
+    Shared by ``GET /runs/{run_id}`` and ``GET /symbols/{symbol_id}/runs/latest``
+    so both endpoints serialize a run identically.
+    """
+    symbol = db.get(Symbol, run.symbol_id)
+    ticker = symbol.ticker if symbol is not None else ""
+
+    analyses = (
+        db.execute(
+            select(Analysis).where(Analysis.run_id == run.id).order_by(Analysis.created_at.asc())
+        )
+        .scalars()
+        .all()
+    )
+    reco = db.execute(
+        select(Recommendation).where(Recommendation.run_id == run.id)
+    ).scalar_one_or_none()
+
+    return run_to_out(run, ticker, analyses, reco)
+
+
 @router.get("/runs/{run_id}", response_model=AnalysisRunOut)
 def get_run(run_id: int, db: Session = Depends(get_db)) -> AnalysisRunOut:
     """Polling endpoint: current status of a run plus per-agent analyses so far."""
@@ -133,18 +156,28 @@ def get_run(run_id: int, db: Session = Depends(get_db)) -> AnalysisRunOut:
     if run is None:
         raise HTTPException(status_code=404, detail="Run di analisi non trovata.")
 
-    symbol = db.get(Symbol, run.symbol_id)
-    ticker = symbol.ticker if symbol is not None else ""
+    return _serialize_run(run, db)
 
-    analyses = (
-        db.execute(
-            select(Analysis).where(Analysis.run_id == run_id).order_by(Analysis.created_at.asc())
-        )
-        .scalars()
-        .all()
-    )
-    reco = db.execute(
-        select(Recommendation).where(Recommendation.run_id == run_id)
+
+@router.get("/symbols/{symbol_id}/runs/latest", response_model=AnalysisRunOut)
+def get_latest_run(symbol_id: int, db: Session = Depends(get_db)) -> AnalysisRunOut:
+    """Most recent run for a symbol (by ``started_at``, id desc as tiebreak).
+
+    Lets the frontend detect and resume an in-flight analysis after navigating
+    away and back, since ``run_id`` is otherwise only known to the tab that
+    triggered the run.
+    """
+    symbol = db.get(Symbol, symbol_id)
+    if symbol is None:
+        raise HTTPException(status_code=404, detail="Simbolo non trovato.")
+
+    run = db.execute(
+        select(AnalysisRun)
+        .where(AnalysisRun.symbol_id == symbol_id)
+        .order_by(AnalysisRun.started_at.desc(), AnalysisRun.id.desc())
+        .limit(1)
     ).scalar_one_or_none()
+    if run is None:
+        raise HTTPException(status_code=404, detail="Nessuna analisi per questo simbolo.")
 
-    return run_to_out(run, ticker, analyses, reco)
+    return _serialize_run(run, db)
