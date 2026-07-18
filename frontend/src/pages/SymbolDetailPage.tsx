@@ -23,6 +23,12 @@ import RecommendationCard from "../components/recommendations/RecommendationCard
 import AgentBreakdown from "../components/recommendations/AgentBreakdown";
 import RecommendationTimeline from "../components/recommendations/RecommendationTimeline";
 import RunProgress from "../components/recommendations/RunProgress";
+import { parseBackendDate } from "../lib/format";
+
+// A run that finished within this window is still shown (with its final state)
+// to whoever re-enters the page: without it, a quickly-failed analysis would
+// leave no visible trace after navigating away and back.
+const RECENT_RUN_WINDOW_MS = 30 * 60 * 1000;
 
 export default function SymbolDetailPage() {
   const { ticker } = useParams<{ ticker: string }>();
@@ -123,13 +129,20 @@ export default function SymbolDetailPage() {
     setAnalyzeInfo(null);
   }, [symbolId]);
 
-  // Resume polling for a run that is still PENDING/RUNNING for this symbol.
+  // Resume polling for a run that is still PENDING/RUNNING for this symbol;
+  // a run that finished only minutes ago is shown too (final state, no
+  // polling), so its outcome/error survives leaving and re-entering the page.
   useEffect(() => {
     const latest = latestRunQuery.data;
-    if (!latest || latest.symbol_id !== symbolId) return;
-    if ((latest.status === "PENDING" || latest.status === "RUNNING") && activeRunId === null) {
+    if (!latest || latest.symbol_id !== symbolId || activeRunId !== null) return;
+    if (latest.status === "PENDING" || latest.status === "RUNNING") {
       setActiveRunId(latest.id);
       setRunPollingEnabled(true);
+      return;
+    }
+    const finishedAt = latest.finished_at ?? latest.started_at;
+    if (Date.now() - parseBackendDate(finishedAt).getTime() < RECENT_RUN_WINDOW_MS) {
+      setActiveRunId(latest.id);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [latestRunQuery.data, symbolId]);
