@@ -310,6 +310,16 @@ export const GLOSSARY: Record<string, GlossEntry> = {
     short:
       "Il 'cervello' di intelligenza artificiale usato dagli attori per analizzare i dati. Modelli diversi hanno costi e qualità diverse; puoi sceglierne uno economico per gli analisti e uno più potente per il sintetizzatore.",
   },
+  llm_provider: {
+    term: "Provider LLM",
+    short:
+      "Il servizio esterno (OpenRouter o Google Gemini) a cui l'app invia i dati da analizzare per ottenere le risposte dell'intelligenza artificiale. Puoi sceglierne uno come principale e usare l'altro come riserva automatica.",
+  },
+  api_key: {
+    term: "Chiave API",
+    short:
+      "Una password speciale che autorizza l'app a usare un provider LLM (OpenRouter o Gemini) a tuo nome. La ottieni dal sito del provider e la incolli qui: resta salvata solo sul tuo computer, nel database locale dell'app, e non viene condivisa con nessun altro.",
+  },
 
   // --- Valutazione settimanale ---
   weekly_evaluation: {
@@ -546,6 +556,8 @@ export const GLOSSARY_SECTIONS: ReadonlyArray<{ title: string; keys: readonly st
       "synthesizer",
       "validator",
       "llm_model",
+      "llm_provider",
+      "api_key",
     ],
   },
   {

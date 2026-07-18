@@ -463,3 +463,60 @@ class LlmConfigUpdate(BaseModel):
 
     default: LlmModelRef | None = None
     per_agent: dict[str, LlmModelRef | None] = Field(default_factory=dict)
+
+
+# --------------------------------------------------------------------------- #
+# LLM provider settings (provider choice + API keys, managed from Settings)
+# --------------------------------------------------------------------------- #
+
+
+class LlmProviderState(BaseModel):
+    """The effective state of one provider for the Settings screen.
+
+    ``source`` is ``"app"`` when the effective key comes from the DB (saved in the
+    app), ``"env"`` when it comes only from the ``.env`` fallback, or ``null`` when
+    no key is configured anywhere. ``key_masked`` never contains the full key.
+    """
+
+    provider: str
+    configured: bool
+    source: Literal["app", "env"] | None
+    key_masked: str | None
+    default_model: str
+
+
+class LlmProvidersOut(BaseModel):
+    """Response of ``GET``/``PUT`` ``/api/llm/providers`` — effective provider config."""
+
+    primary_provider: str
+    fallback_enabled: bool
+    providers: list[LlmProviderState]
+
+
+class LlmProvidersUpdate(BaseModel):
+    """Body of ``PUT /api/llm/providers`` — partial update of the provider config.
+
+    A field ABSENT from the body leaves that setting unchanged. For the API-key
+    fields, an explicit ``null`` deletes the stored key (env fallback, if any,
+    remains) and a non-empty string stores the trimmed value; an empty/whitespace
+    string is rejected. ``primary_provider`` (when present and non-null) must be
+    one of ``openrouter`` / ``gemini``.
+    """
+
+    primary_provider: str | None = None
+    fallback_enabled: bool | None = None
+    openrouter_api_key: str | None = None
+    gemini_api_key: str | None = None
+
+
+class LlmProviderTestRequest(BaseModel):
+    """Body of ``POST /api/llm/providers/test`` — which provider to validate."""
+
+    provider: str
+
+
+class LlmProviderTestResult(BaseModel):
+    """Result of a provider connectivity/key test (Italian user-facing detail)."""
+
+    ok: bool
+    detail_it: str

@@ -22,7 +22,7 @@ from app.api.deps import get_db
 from app.api.evaluations import evaluation_to_out
 from app.api.settings import get_or_create_settings
 from app.api.symbols import build_symbol_with_quote
-from app.config import get_settings
+from app.llm.runtime import get_effective
 from app.models import AnalysisRun, Evaluation, Symbol
 from app.schemas import DashboardSummary, HealthOut, ProviderStatus, SettingsOut
 
@@ -130,19 +130,19 @@ def health(db: Session = Depends(get_db)) -> HealthOut:
         logger.error("Health check DB fallito", exc_info=True)
         db_ok = False
 
-    settings = get_settings()
-    primary = settings.llm_provider
+    config = get_effective()
+    primary = config.primary_provider
     providers = [
         ProviderStatus(
             provider="openrouter",
-            configured=settings.openrouter_configured,
-            model=settings.openrouter_model,
+            configured=config.openrouter_configured,
+            model=config.openrouter_model,
             is_primary=(primary == "openrouter"),
         ),
         ProviderStatus(
             provider="gemini",
-            configured=settings.gemini_configured,
-            model=settings.gemini_model,
+            configured=config.gemini_configured,
+            model=config.gemini_model,
             is_primary=(primary == "gemini"),
         ),
     ]

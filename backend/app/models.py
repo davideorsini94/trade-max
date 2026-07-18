@@ -320,3 +320,29 @@ class LlmModelPref(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
     )
+
+
+class LlmProviderSettings(Base):
+    """Single-row (id=1) DB overrides for the effective LLM provider config.
+
+    Manages, from the app's Settings page, the provider choice and the API keys
+    that would otherwise live only in the ``.env`` file. Every column is nullable
+    and, when non-null, overrides the corresponding env setting field by field; a
+    null column falls back to env (``get_settings()``). Models are NOT stored here
+    — they always come from env / the ``llm_model_prefs`` table. The merge lives
+    in ``app.llm.runtime.get_effective``; API keys are secrets and are never
+    logged.
+    """
+
+    __tablename__ = "llm_provider_settings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    # null => use env LLM_PROVIDER; otherwise "openrouter" | "gemini".
+    primary_provider: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    openrouter_api_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    gemini_api_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # null => use env LLM_FALLBACK_ENABLED.
+    fallback_enabled: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
+    )

@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from typing import TYPE_CHECKING
 
-from app.config import Settings
 from app.llm.json_utils import LLMOutputError, extract_json
 from app.llm.providers import BaseProvider, GeminiProvider, OpenRouterProvider, ProviderError
+
+if TYPE_CHECKING:
+    from app.llm.runtime import EffectiveLlmConfig
 
 logger = logging.getLogger(__name__)
 
@@ -22,32 +25,71 @@ class LLMUnavailableError(Exception):
 class LLMClient:
     """Provider-agnostic JSON completion client.
 
-    Providers are tried in order (primary first, then the fallback when
-    ``LLM_FALLBACK_ENABLED``); each gets :data:`ATTEMPTS_PER_PROVIDER` tries.
-    Malformed JSON output counts as a retryable failure — a second sample or
-    the other provider often fixes it.
+    Providers are tried in order (primary first, then the fallback when fallback
+    is enabled); each gets :data:`ATTEMPTS_PER_PROVIDER` tries. Malformed JSON
+    output counts as a retryable failure — a second sample or the other provider
+    often fixes it.
+
+    The client is built from the *effective* LLM config
+    (:class:`app.llm.runtime.EffectiveLlmConfig`, env with DB overrides) and is a
+    process-wide singleton. Rather than rebuilding on every config change, it
+    re-syncs its providers **in place** at the top of :meth:`complete_json`
+    whenever the runtime *generation* has advanced (option A of the design): the
+    pooled ``httpx`` clients are reused (keys/models travel per-request, not in
+    the connection), so a config change never churns connections.
     """
 
-    def __init__(self, settings: Settings):
-        self._settings = settings
-        self._openrouter = OpenRouterProvider(
-            settings.openrouter_api_key, settings.openrouter_model
-        )
-        self._gemini = GeminiProvider(settings.gemini_api_key, settings.gemini_model)
+    def __init__(self, config: "EffectiveLlmConfig | None" = None):
+        # Provider shells; api_key/model are (re)assigned by ``_apply_config``.
+        self._openrouter = OpenRouterProvider("", "")
+        self._gemini = GeminiProvider("", "")
         self._by_name: dict[str, BaseProvider] = {
             self._openrouter.name: self._openrouter,
             self._gemini.name: self._gemini,
         }
-        self._fallback_enabled = settings.llm_fallback_enabled
+        self._fallback_enabled = True
+        self.providers: list[BaseProvider] = [self._openrouter]
+        self._generation = -1
+        if config is not None:
+            from app.llm.runtime import get_generation
+
+            self._apply_config(config)
+            self._generation = get_generation()
+        else:
+            # Read generation-then-config atomically so the pairing is never stale.
+            self._sync_config()
+
+    def _apply_config(self, config: "EffectiveLlmConfig") -> None:
+        """Update provider keys/models and the primary→fallback ordering in place."""
+        self._openrouter.api_key = config.openrouter_api_key
+        self._openrouter.model = config.openrouter_model
+        self._gemini.api_key = config.gemini_api_key
+        self._gemini.model = config.gemini_model
+        self._fallback_enabled = config.fallback_enabled
         ordered = (
             [self._gemini, self._openrouter]
-            if settings.llm_provider == "gemini"
+            if config.primary_provider == "gemini"
             else [self._openrouter, self._gemini]
         )
         primary, fallback = ordered
-        self.providers: list[BaseProvider] = [primary]
-        if settings.llm_fallback_enabled and fallback.configured:
+        self.providers = [primary]
+        if config.fallback_enabled and fallback.configured:
             self.providers.append(fallback)
+
+    def _sync_config(self) -> None:
+        """Re-sync providers from the effective config when the generation changed.
+
+        The generation is read *before* the config so the cached config is always
+        at least as fresh as the recorded generation; over-syncing (recomputing
+        one extra time) is harmless, under-syncing (stale keys) cannot happen.
+        """
+        from app.llm.runtime import get_effective, get_generation
+
+        gen = get_generation()
+        if gen == self._generation:
+            return
+        self._apply_config(get_effective())
+        self._generation = gen
 
     def _resolve_order(
         self, provider: str | None, model: str | None
@@ -88,6 +130,8 @@ class LLMClient:
         provider is used as fallback with its own default model. Existing callers
         that pass neither keep the env-configured ordering and models unchanged.
         """
+        # Pick up any provider/key/model change saved from the app's Settings page.
+        self._sync_config()
         errors: list[str] = []
         for prov, model_override in self._resolve_order(provider, model):
             if not prov.configured:

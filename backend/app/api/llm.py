@@ -23,9 +23,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
-from app.config import Settings, get_settings
 from app.llm.prefs import invalidate_prefs_cache
-from app.models import LlmModelPref
+from app.llm.runtime import EffectiveLlmConfig, get_effective, invalidate_effective
+from app.models import LlmModelPref, LlmProviderSettings
 from app.schemas import (
     LlmConfigOut,
     LlmConfigUpdate,
@@ -33,6 +33,11 @@ from app.schemas import (
     LlmModelRef,
     LlmModelsOut,
     LlmProviderInfo,
+    LlmProvidersOut,
+    LlmProviderState,
+    LlmProvidersUpdate,
+    LlmProviderTestRequest,
+    LlmProviderTestResult,
 )
 
 logger = logging.getLogger(__name__)
@@ -64,28 +69,40 @@ _MODELS_TTL_S = 3600.0
 # --------------------------------------------------------------------------- #
 
 
-def _provider_configured(settings: Settings, provider: str) -> bool:
+def _provider_configured(config: EffectiveLlmConfig, provider: str) -> bool:
     if provider == "openrouter":
-        return settings.openrouter_configured
+        return config.openrouter_configured
     if provider == "gemini":
-        return settings.gemini_configured
+        return config.gemini_configured
     return False
 
 
-def _provider_default_model(settings: Settings, provider: str) -> str:
+def _provider_default_model(config: EffectiveLlmConfig, provider: str) -> str:
     if provider == "openrouter":
-        return settings.openrouter_model
+        return config.openrouter_model
     if provider == "gemini":
-        return settings.gemini_model
+        return config.gemini_model
     return ""
 
 
-def _provider_api_key(settings: Settings, provider: str) -> str:
+def _provider_api_key(config: EffectiveLlmConfig, provider: str) -> str:
     if provider == "openrouter":
-        return settings.openrouter_api_key
+        return config.openrouter_api_key
     if provider == "gemini":
-        return settings.gemini_api_key
+        return config.gemini_api_key
     return ""
+
+
+def _mask_key(key: str) -> str:
+    """Return a display-safe hint of ``key`` — never the full value.
+
+    ``first5 + "…" + last4`` for normal keys, or ``"…" + last4`` for short keys
+    (where showing the first five would reveal (nearly) the whole key).
+    """
+    key = key.strip()
+    if len(key) < 10:
+        return "…" + key[-4:]
+    return key[:5] + "…" + key[-4:]
 
 
 # --------------------------------------------------------------------------- #
@@ -155,10 +172,10 @@ async def get_models(provider: str) -> LlmModelsOut:
     400 when the provider is unknown or its API key is not configured; 502 when
     the upstream fetch fails.
     """
-    settings = get_settings()
+    config = get_effective()
     if provider not in _VALID_PROVIDERS:
         raise HTTPException(status_code=400, detail=f"Provider non valido: {provider}.")
-    if not _provider_configured(settings, provider):
+    if not _provider_configured(config, provider):
         raise HTTPException(
             status_code=400,
             detail=f"Provider {provider} non configurato (chiave API mancante).",
@@ -169,7 +186,7 @@ async def get_models(provider: str) -> LlmModelsOut:
     if cached is not None and (now - cached[0]) < _MODELS_TTL_S:
         return cached[1]
 
-    api_key = _provider_api_key(settings, provider)
+    api_key = _provider_api_key(config, provider)
     try:
         if provider == "openrouter":
             models = await _fetch_openrouter_models(api_key)
@@ -187,20 +204,22 @@ async def get_models(provider: str) -> LlmModelsOut:
     return result
 
 
-def _build_config(db: Session, settings: Settings) -> LlmConfigOut:
-    """Assemble the ``GET /api/llm/config`` payload from settings + prefs table."""
+def _build_config(db: Session, config: EffectiveLlmConfig) -> LlmConfigOut:
+    """Assemble the ``GET /api/llm/config`` payload from effective config + prefs table."""
     rows = {row.agent_name: row for row in db.query(LlmModelPref).all()}
     default_row = rows.get("default")
-    # is_primary reflects the EFFECTIVE default provider: DB default if set,
-    # else the env-configured LLM_PROVIDER.
-    effective_primary = default_row.provider if default_row is not None else settings.llm_provider
+    # is_primary reflects the EFFECTIVE default provider: the model-prefs default
+    # row if set, otherwise the effective primary provider (DB override, else env).
+    effective_primary = (
+        default_row.provider if default_row is not None else config.primary_provider
+    )
 
     providers = [
         LlmProviderInfo(
             provider=name,
-            configured=_provider_configured(settings, name),
+            configured=_provider_configured(config, name),
             is_primary=(effective_primary == name),
-            env_default_model=_provider_default_model(settings, name),
+            env_default_model=_provider_default_model(config, name),
         )
         for name in _VALID_PROVIDERS
     ]
@@ -221,7 +240,7 @@ def _build_config(db: Session, settings: Settings) -> LlmConfigOut:
 @router.get("/config", response_model=LlmConfigOut)
 def get_config(db: Session = Depends(get_db)) -> LlmConfigOut:
     """Return provider configuration state plus stored default/per-agent prefs."""
-    return _build_config(db, get_settings())
+    return _build_config(db, get_effective())
 
 
 @router.put("/config", response_model=LlmConfigOut)
@@ -235,12 +254,12 @@ def update_config(payload: LlmConfigUpdate, db: Session = Depends(get_db)) -> Ll
     a non-empty model) before anything is written; on success the prefs cache is
     invalidated and the fresh ``GET`` shape is returned.
     """
-    settings = get_settings()
+    config = get_effective()
 
     def _validate(ref: LlmModelRef) -> None:
         if ref.provider not in _VALID_PROVIDERS:
             raise HTTPException(status_code=400, detail=f"Provider non valido: {ref.provider}.")
-        if not _provider_configured(settings, ref.provider):
+        if not _provider_configured(config, ref.provider):
             raise HTTPException(
                 status_code=400,
                 detail=f"Provider {ref.provider} non configurato (chiave API mancante).",
@@ -273,4 +292,148 @@ def update_config(payload: LlmConfigUpdate, db: Session = Depends(get_db)) -> Ll
 
     db.commit()
     invalidate_prefs_cache()
-    return _build_config(db, settings)
+    return _build_config(db, config)
+
+
+# --------------------------------------------------------------------------- #
+# Provider settings (provider choice + API keys, managed from the Settings page)
+# --------------------------------------------------------------------------- #
+
+
+def _build_providers_out() -> LlmProvidersOut:
+    """Assemble the ``/api/llm/providers`` payload from the effective config.
+
+    Keys are always masked; the full value never leaves the server.
+    """
+    config = get_effective()
+    return LlmProvidersOut(
+        primary_provider=config.primary_provider,
+        fallback_enabled=config.fallback_enabled,
+        providers=[
+            LlmProviderState(
+                provider="openrouter",
+                configured=config.openrouter_configured,
+                source=config.openrouter_source,
+                key_masked=(
+                    _mask_key(config.openrouter_api_key)
+                    if config.openrouter_configured
+                    else None
+                ),
+                default_model=config.openrouter_model,
+            ),
+            LlmProviderState(
+                provider="gemini",
+                configured=config.gemini_configured,
+                source=config.gemini_source,
+                key_masked=(
+                    _mask_key(config.gemini_api_key) if config.gemini_configured else None
+                ),
+                default_model=config.gemini_model,
+            ),
+        ],
+    )
+
+
+@router.get("/providers", response_model=LlmProvidersOut)
+def get_providers() -> LlmProvidersOut:
+    """Return the effective provider config (choice, fallback, per-provider state)."""
+    return _build_providers_out()
+
+
+@router.put("/providers", response_model=LlmProvidersOut)
+def update_providers(
+    payload: LlmProvidersUpdate, db: Session = Depends(get_db)
+) -> LlmProvidersOut:
+    """Persist provider-config changes to the single ``llm_provider_settings`` row.
+
+    Only fields PRESENT in the body are touched. For the API keys: ``null``
+    deletes the stored key (the ``.env`` fallback, if any, remains), a non-empty
+    string is stored trimmed, and an empty string is rejected. ``primary_provider``
+    (present, non-null) must be a known provider. On success the effective-config
+    cache is invalidated so the change takes effect immediately, and the fresh
+    ``GET`` shape is returned. Keys are never logged.
+    """
+    fields = payload.model_fields_set
+
+    # Validate everything before mutating anything.
+    if "primary_provider" in fields and payload.primary_provider is not None:
+        if payload.primary_provider.strip().lower() not in _VALID_PROVIDERS:
+            raise HTTPException(
+                status_code=400, detail=f"Provider non valido: {payload.primary_provider}."
+            )
+    for key_field in ("openrouter_api_key", "gemini_api_key"):
+        if key_field in fields:
+            value = getattr(payload, key_field)
+            if value is not None and not value.strip():
+                raise HTTPException(status_code=400, detail="Chiave API non valida.")
+
+    row = db.get(LlmProviderSettings, 1)
+    if row is None:
+        row = LlmProviderSettings(id=1)
+        db.add(row)
+
+    if "primary_provider" in fields:
+        row.primary_provider = (
+            payload.primary_provider.strip().lower()
+            if payload.primary_provider is not None
+            else None
+        )
+    if "fallback_enabled" in fields:
+        row.fallback_enabled = payload.fallback_enabled
+    if "openrouter_api_key" in fields:
+        row.openrouter_api_key = (
+            payload.openrouter_api_key.strip()
+            if payload.openrouter_api_key is not None
+            else None
+        )
+    if "gemini_api_key" in fields:
+        row.gemini_api_key = (
+            payload.gemini_api_key.strip() if payload.gemini_api_key is not None else None
+        )
+
+    db.commit()
+    invalidate_effective()
+    return _build_providers_out()
+
+
+@router.post("/providers/test", response_model=LlmProviderTestResult)
+async def test_provider(payload: LlmProviderTestRequest) -> LlmProviderTestResult:
+    """Validate a provider's EFFECTIVE key by listing its models (cache bypassed).
+
+    400 when the provider is unknown or no key is configured anywhere; otherwise
+    ``ok=false`` with an Italian detail on auth/network errors, ``ok=true`` when
+    the models listing succeeds.
+    """
+    provider = payload.provider
+    if provider not in _VALID_PROVIDERS:
+        raise HTTPException(status_code=400, detail=f"Provider non valido: {provider}.")
+
+    api_key = _provider_api_key(get_effective(), provider)
+    if not api_key.strip():
+        raise HTTPException(
+            status_code=400,
+            detail=f"Provider {provider} non configurato (chiave API mancante).",
+        )
+
+    try:
+        if provider == "openrouter":
+            await _fetch_openrouter_models(api_key)
+        else:
+            await _fetch_gemini_models(api_key)
+    except httpx.HTTPStatusError as exc:
+        status = exc.response.status_code
+        if status in (401, 403):
+            return LlmProviderTestResult(
+                ok=False, detail_it="Chiave API non valida o non autorizzata."
+            )
+        return LlmProviderTestResult(
+            ok=False, detail_it=f"Il provider ha risposto con un errore (HTTP {status})."
+        )
+    except Exception as exc:  # network/timeout/parse errors
+        logger.warning("Test del provider %s fallito: %s", provider, exc)
+        return LlmProviderTestResult(
+            ok=False,
+            detail_it="Impossibile contattare il provider. Verifica la chiave e la connessione.",
+        )
+
+    return LlmProviderTestResult(ok=True, detail_it="Connessione riuscita: chiave valida.")

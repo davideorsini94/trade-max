@@ -45,7 +45,12 @@ function cleanRef(ref: LlmModelRef | null): LlmModelRef | null {
 const inputClass =
   "w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500 disabled:opacity-50";
 
-export default function LlmModelsCard() {
+interface LlmModelsCardProps {
+  /** Bump this (e.g. after a provider-key change) to re-run the /llm/config load. */
+  refreshToken?: number;
+}
+
+export default function LlmModelsCard({ refreshToken }: LlmModelsCardProps = {}) {
   const [config, setConfig] = useState<LlmConfigOut | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -121,7 +126,7 @@ export default function LlmModelsCard() {
   useEffect(() => {
     const cleanup = loadConfig();
     return cleanup;
-  }, [loadConfig]);
+  }, [loadConfig, refreshToken]);
 
   const configuredProviders = (config?.providers ?? []).filter((p) => p.configured);
   const primaryProvider = config?.providers.find((p) => p.is_primary) ?? null;
@@ -286,8 +291,7 @@ export default function LlmModelsCard() {
   } else if (configuredProviders.length === 0) {
     body = (
       <p className="text-sm leading-relaxed text-slate-400">
-        Aggiungi una chiave API nel file <code className="rounded bg-slate-800 px-1 py-0.5 text-xs">.env</code> per
-        scegliere i modelli.
+        Salva una chiave API nella sezione «Provider LLM» qui sopra per scegliere i modelli.
       </p>
     );
   } else {

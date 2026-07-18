@@ -374,3 +374,43 @@ export interface LlmConfigUpdate {
   default: LlmModelRef | null;
   per_agent: LlmPerAgentConfig;
 }
+
+// --- LLM provider keys (Settings) ---
+
+export type LlmProviderName = "openrouter" | "gemini";
+
+/**
+ * Configured state of a single LLM provider.
+ * source: "app" when the key comes from the DB, "env" when only from .env,
+ * null when absent. key_masked never contains the full key.
+ */
+export interface LlmProviderKeyInfo {
+  provider: LlmProviderName;
+  configured: boolean;
+  source: "app" | "env" | null;
+  key_masked: string | null;
+  default_model: string;
+}
+
+export interface LlmProvidersOut {
+  primary_provider: LlmProviderName;
+  fallback_enabled: boolean;
+  providers: LlmProviderKeyInfo[];
+}
+
+/**
+ * Body for PUT /api/llm/providers. Every field is optional:
+ * absent = unchanged; a key set to null = delete the stored key (env remains as
+ * fallback if present); a non-empty string = store the trimmed key.
+ */
+export interface LlmProvidersUpdate {
+  primary_provider?: LlmProviderName;
+  fallback_enabled?: boolean;
+  openrouter_api_key?: string | null;
+  gemini_api_key?: string | null;
+}
+
+export interface LlmProviderTestOut {
+  ok: boolean;
+  detail_it: string;
+}

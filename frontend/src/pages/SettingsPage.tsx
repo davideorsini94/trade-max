@@ -1,12 +1,12 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { apiGet, apiPut, errorMessage } from "../api/client";
 import { RISK_PROFILES } from "../api/types";
-import type { HealthOut, RiskProfile, SettingsOut, SettingsUpdate } from "../api/types";
+import type { RiskProfile, SettingsOut, SettingsUpdate } from "../api/types";
 import { useApi } from "../hooks/useApi";
 import Card from "../components/common/Card";
 import Spinner from "../components/common/Spinner";
 import ErrorBox from "../components/common/ErrorBox";
-import Badge from "../components/common/Badge";
+import ProviderKeysCard from "../components/settings/ProviderKeysCard";
 import LlmModelsCard from "../components/settings/LlmModelsCard";
 import { RISK_PROFILE_DESCRIPTIONS_IT, RISK_PROFILE_LABELS_IT } from "../lib/labels";
 import { gloss } from "../lib/glossary";
@@ -31,19 +31,15 @@ function toFormState(settings: SettingsOut): SettingsFormState {
   };
 }
 
-const PROVIDER_LABELS: Record<string, string> = {
-  openrouter: "OpenRouter",
-  gemini: "Gemini",
-};
-
 export default function SettingsPage() {
   const settingsQuery = useApi<SettingsOut>(() => apiGet<SettingsOut>("/settings"), []);
-  const healthQuery = useApi<HealthOut>(() => apiGet<HealthOut>("/health"), []);
 
   const [form, setForm] = useState<SettingsFormState | null>(null);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<number | null>(null);
+  // Bumped whenever the provider keys change, so LlmModelsCard reloads /llm/config.
+  const [llmRefreshToken, setLlmRefreshToken] = useState(0);
 
   useEffect(() => {
     if (settingsQuery.data) {
@@ -234,37 +230,9 @@ export default function SettingsPage() {
         </form>
       </Card>
 
-      <Card title="Stato provider LLM">
-        {healthQuery.loading ? (
-          <Spinner />
-        ) : healthQuery.error ? (
-          <ErrorBox message={healthQuery.error} onRetry={healthQuery.refetch} />
-        ) : (
-          <ul className="space-y-3">
-            {(healthQuery.data?.providers ?? []).map((provider) => (
-              <li
-                key={provider.provider}
-                className="flex items-center justify-between gap-3 rounded-lg border border-[var(--tm-border)] px-4 py-3"
-              >
-                <div>
-                  <div className="flex items-center gap-2">
-                    <span className="font-semibold text-slate-100">
-                      {PROVIDER_LABELS[provider.provider] ?? provider.provider}
-                    </span>
-                    {provider.is_primary ? <Badge variant="info">Primario</Badge> : null}
-                  </div>
-                  <p className="mt-0.5 text-xs text-slate-500">Modello: {provider.model || "—"}</p>
-                </div>
-                <Badge variant={provider.configured ? "gain" : "loss"}>
-                  {provider.configured ? "Configurato ✓" : "Non configurato"}
-                </Badge>
-              </li>
-            ))}
-          </ul>
-        )}
-      </Card>
+      <ProviderKeysCard onChanged={() => setLlmRefreshToken((n) => n + 1)} />
 
-      <LlmModelsCard />
+      <LlmModelsCard refreshToken={llmRefreshToken} />
     </div>
   );
 }

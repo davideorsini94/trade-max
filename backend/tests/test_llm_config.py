@@ -33,9 +33,15 @@ AGENT_NAMES = (
 
 
 def _fake_settings(**overrides: object) -> SimpleNamespace:
-    """A Settings-shaped stand-in exposing only the attributes the endpoints read."""
+    """An EffectiveLlmConfig-shaped stand-in exposing only the attrs the endpoints read.
+
+    ``llm_api`` now reads the effective config (env + DB overrides) via
+    ``get_effective``; these tests monkeypatch that with this stand-in so they stay
+    fully offline. ``primary_provider`` mirrors the effective primary (DB override,
+    else env ``LLM_PROVIDER``).
+    """
     values: dict[str, object] = {
-        "llm_provider": "openrouter",
+        "primary_provider": "openrouter",
         "openrouter_configured": True,
         "gemini_configured": True,
         "openrouter_model": "openai/gpt-4o-mini",
@@ -63,7 +69,7 @@ def _reset_caches() -> None:
 
 
 def test_get_config_defaults(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(llm_api, "get_settings", lambda: _fake_settings(llm_provider="openrouter"))
+    monkeypatch.setattr(llm_api, "get_effective", lambda: _fake_settings(primary_provider="openrouter"))
 
     resp = client.get("/api/llm/config")
     assert resp.status_code == 200
@@ -84,7 +90,7 @@ def test_get_config_defaults(client: TestClient, monkeypatch: pytest.MonkeyPatch
 def test_get_config_primary_follows_env_provider(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(llm_api, "get_settings", lambda: _fake_settings(llm_provider="gemini"))
+    monkeypatch.setattr(llm_api, "get_effective", lambda: _fake_settings(primary_provider="gemini"))
     providers = {p["provider"]: p for p in client.get("/api/llm/config").json()["providers"]}
     assert providers["gemini"]["is_primary"] is True
     assert providers["openrouter"]["is_primary"] is False
@@ -96,7 +102,7 @@ def test_get_config_primary_follows_env_provider(
 
 
 def test_put_config_roundtrip(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(llm_api, "get_settings", lambda: _fake_settings())
+    monkeypatch.setattr(llm_api, "get_effective", lambda: _fake_settings())
 
     resp = client.put(
         "/api/llm/config",
@@ -134,7 +140,7 @@ def test_put_config_roundtrip(client: TestClient, monkeypatch: pytest.MonkeyPatc
 
 
 def test_put_config_model_is_trimmed(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(llm_api, "get_settings", lambda: _fake_settings())
+    monkeypatch.setattr(llm_api, "get_effective", lambda: _fake_settings())
     resp = client.put(
         "/api/llm/config",
         json={"default": {"provider": "openrouter", "model": "  openai/gpt-4o  "}, "per_agent": {}},
@@ -146,7 +152,7 @@ def test_put_config_model_is_trimmed(client: TestClient, monkeypatch: pytest.Mon
 def test_put_config_unknown_provider_returns_400(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(llm_api, "get_settings", lambda: _fake_settings())
+    monkeypatch.setattr(llm_api, "get_effective", lambda: _fake_settings())
     resp = client.put(
         "/api/llm/config",
         json={"default": {"provider": "cohere", "model": "command"}, "per_agent": {}},
@@ -158,7 +164,7 @@ def test_put_config_unknown_provider_returns_400(
 def test_put_config_unconfigured_provider_returns_400(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(llm_api, "get_settings", lambda: _fake_settings(gemini_configured=False))
+    monkeypatch.setattr(llm_api, "get_effective", lambda: _fake_settings(gemini_configured=False))
     resp = client.put(
         "/api/llm/config",
         json={"default": {"provider": "gemini", "model": "gemini-2.0-flash"}, "per_agent": {}},
@@ -170,7 +176,7 @@ def test_put_config_unconfigured_provider_returns_400(
 def test_put_config_empty_model_returns_400(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(llm_api, "get_settings", lambda: _fake_settings())
+    monkeypatch.setattr(llm_api, "get_effective", lambda: _fake_settings())
     resp = client.put(
         "/api/llm/config",
         json={"default": {"provider": "openrouter", "model": "   "}, "per_agent": {}},
@@ -183,7 +189,7 @@ def test_put_config_rejects_invalid_before_writing(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A single invalid slot fails the whole PUT without persisting any row."""
-    monkeypatch.setattr(llm_api, "get_settings", lambda: _fake_settings())
+    monkeypatch.setattr(llm_api, "get_effective", lambda: _fake_settings())
     resp = client.put(
         "/api/llm/config",
         json={
@@ -202,7 +208,7 @@ def test_put_config_rejects_invalid_before_writing(
 
 
 def test_get_models_openrouter(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(llm_api, "get_settings", lambda: _fake_settings())
+    monkeypatch.setattr(llm_api, "get_effective", lambda: _fake_settings())
 
     async def fake_fetch(api_key: str) -> list[LlmModelInfo]:
         assert api_key == "or-key"
@@ -223,7 +229,7 @@ def test_get_models_openrouter(client: TestClient, monkeypatch: pytest.MonkeyPat
 
 
 def test_get_models_gemini(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(llm_api, "get_settings", lambda: _fake_settings())
+    monkeypatch.setattr(llm_api, "get_effective", lambda: _fake_settings())
 
     async def fake_fetch(api_key: str) -> list[LlmModelInfo]:
         assert api_key == "gm-key"
@@ -241,7 +247,7 @@ def test_get_models_gemini(client: TestClient, monkeypatch: pytest.MonkeyPatch) 
 def test_get_models_caches_within_ttl(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(llm_api, "get_settings", lambda: _fake_settings())
+    monkeypatch.setattr(llm_api, "get_effective", lambda: _fake_settings())
     calls = {"n": 0}
 
     async def fake_fetch(api_key: str) -> list[LlmModelInfo]:
@@ -259,7 +265,7 @@ def test_get_models_caches_within_ttl(
 def test_get_models_unknown_provider_returns_400(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(llm_api, "get_settings", lambda: _fake_settings())
+    monkeypatch.setattr(llm_api, "get_effective", lambda: _fake_settings())
     resp = client.get("/api/llm/models", params={"provider": "cohere"})
     assert resp.status_code == 400
     assert "Provider non valido" in resp.json()["detail"]
@@ -269,7 +275,7 @@ def test_get_models_unconfigured_returns_400(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(
-        llm_api, "get_settings", lambda: _fake_settings(openrouter_configured=False)
+        llm_api, "get_effective", lambda: _fake_settings(openrouter_configured=False)
     )
     resp = client.get("/api/llm/models", params={"provider": "openrouter"})
     assert resp.status_code == 400
@@ -279,7 +285,7 @@ def test_get_models_unconfigured_returns_400(
 def test_get_models_upstream_failure_returns_502(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(llm_api, "get_settings", lambda: _fake_settings())
+    monkeypatch.setattr(llm_api, "get_effective", lambda: _fake_settings())
 
     async def boom(api_key: str) -> list[LlmModelInfo]:
         raise RuntimeError("upstream down")
