@@ -30,6 +30,16 @@ import { parseBackendDate } from "../lib/format";
 // leave no visible trace after navigating away and back.
 const RECENT_RUN_WINDOW_MS = 30 * 60 * 1000;
 
+// Selectable chart windows (calendar days; the backend accepts 1..730 and the
+// stored daily history spans 2 years).
+const CHART_RANGES: { label: string; days: number }[] = [
+  { label: "1M", days: 30 },
+  { label: "3M", days: 91 },
+  { label: "6M", days: 180 },
+  { label: "1A", days: 365 },
+  { label: "2A", days: 730 },
+];
+
 export default function SymbolDetailPage() {
   const { ticker } = useParams<{ ticker: string }>();
 
@@ -44,10 +54,15 @@ export default function SymbolDetailPage() {
 
   const symbolId = symbol?.id ?? null;
 
+  const [chartDays, setChartDays] = useState<number>(180);
+
   const pricesQuery = useApi<PriceHistoryOut | null>(() => {
     if (symbolId === null) return Promise.resolve(null);
-    return apiGet<PriceHistoryOut>(`/symbols/${symbolId}/prices`, { days: 180, indicators: true });
-  }, [symbolId]);
+    return apiGet<PriceHistoryOut>(`/symbols/${symbolId}/prices`, {
+      days: chartDays,
+      indicators: true,
+    });
+  }, [symbolId, chartDays]);
 
   const overviewPolling = usePolling<SymbolOverviewOut | null>(
     () => {
@@ -267,7 +282,28 @@ export default function SymbolDetailPage() {
         <ErrorBox message={overviewPolling.error} />
       ) : null}
 
-      <Card title="Andamento prezzo e indicatori">
+      <Card
+        title="Andamento prezzo e indicatori"
+        actions={
+          <div className="flex items-center gap-1" role="group" aria-label="Periodo del grafico">
+            {CHART_RANGES.map((range) => (
+              <button
+                key={range.days}
+                type="button"
+                onClick={() => setChartDays(range.days)}
+                aria-pressed={chartDays === range.days}
+                className={`rounded-md px-2.5 py-1 text-xs font-semibold transition ${
+                  chartDays === range.days
+                    ? "bg-brand-600 text-white"
+                    : "text-slate-400 hover:bg-slate-800 hover:text-slate-200"
+                }`}
+              >
+                {range.label}
+              </button>
+            ))}
+          </div>
+        }
+      >
         {pricesQuery.loading ? (
           <div className="flex justify-center py-10">
             <Spinner />
