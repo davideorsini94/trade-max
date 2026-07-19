@@ -403,6 +403,12 @@ class UniversePageOut(BaseModel):
     last_refresh: datetime | None
 
 
+class UniverseIsinLookup(BaseModel):
+    """Body of ``POST /api/universe/isin`` — the ISIN to resolve and persist."""
+
+    isin: str
+
+
 # --------------------------------------------------------------------------- #
 # LLM model selection (per provider AND per actor)
 # --------------------------------------------------------------------------- #

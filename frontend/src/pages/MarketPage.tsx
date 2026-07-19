@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { apiGet, apiPost, errorMessage, isConflict } from "../api/client";
-import type { SymbolOut, UniverseItemOut, UniversePageOut } from "../api/types";
+import type { IsinResolveRequest, SymbolOut, UniverseItemOut, UniversePageOut } from "../api/types";
 import Badge from "../components/common/Badge";
 import ErrorBox from "../components/common/ErrorBox";
 import InfoTip from "../components/common/InfoTip";
@@ -24,6 +24,16 @@ const SORT_OPTIONS: ReadonlyArray<{ value: UniverseSort; label: string }> = [
 const PAGE_SIZES: readonly number[] = [25, 50];
 const SEARCH_DEBOUNCE_MS = 300;
 const POLL_INTERVAL_MS = 10000;
+
+// A valid ISIN is 2 letters + 9 alphanumerics + 1 check digit (case-insensitive here;
+// the backend trims/uppercases and applies the canonical ^[A-Z]{2}[A-Z0-9]{9}[0-9]$).
+const ISIN_RE = /^[A-Za-z]{2}[A-Za-z0-9]{9}[0-9]$/;
+
+interface IsinBanner {
+  isin: string;
+  ticker: string;
+  name: string;
+}
 
 function PctCell({ value }: { value: number | null }) {
   if (value === null) return <span className="text-slate-500">—</span>;
@@ -86,8 +96,18 @@ export default function MarketPage() {
   const [busyTicker, setBusyTicker] = useState<string | null>(null);
   const [rowError, setRowError] = useState<string | null>(null);
 
+  // ISIN lookup: resolving = the ISIN being looked up, banner = the resolved match,
+  // isinError = the Italian detail for a failed lookup (shown without hiding the list).
+  const [isinResolving, setIsinResolving] = useState<string | null>(null);
+  const [isinBanner, setIsinBanner] = useState<IsinBanner | null>(null);
+  const [isinError, setIsinError] = useState<string | null>(null);
+
   const mountedRef = useRef(true);
   const reqSeqRef = useRef(0);
+  // Guards against duplicate POSTs for the same ISIN while one is in flight.
+  const isinInFlightRef = useRef<string | null>(null);
+  // Monotonic sequence so a stale lookup can never overwrite a newer one.
+  const isinSeqRef = useRef(0);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -96,14 +116,52 @@ export default function MarketPage() {
     };
   }, []);
 
-  // Debounce the free-text search into the `q` param and reset to the first page.
+  // Resolve an ISIN into a product: the backend persists it in the universe and
+  // returns the row, so we then load the list filtered by the resolved ticker.
+  const resolveIsin = useCallback(async (isin: string) => {
+    if (isinInFlightRef.current === isin) return; // dedupe same ISIN already in flight
+    const seq = ++isinSeqRef.current;
+    isinInFlightRef.current = isin;
+    setIsinResolving(isin);
+    setIsinBanner(null);
+    setIsinError(null);
+    try {
+      const body: IsinResolveRequest = { isin };
+      const item = await apiPost<UniverseItemOut>("/universe/isin", body);
+      if (!mountedRef.current || seq !== isinSeqRef.current) return;
+      setIsinBanner({ isin, ticker: item.ticker, name: item.name });
+      setDebouncedQ(item.ticker);
+      setPage(1);
+    } catch (err) {
+      if (!mountedRef.current || seq !== isinSeqRef.current) return;
+      setIsinError(errorMessage(err));
+    } finally {
+      if (isinInFlightRef.current === isin) isinInFlightRef.current = null;
+      if (mountedRef.current && seq === isinSeqRef.current) setIsinResolving(null);
+    }
+  }, []);
+
+  // Debounce the free-text search. When the input looks like an ISIN we resolve it
+  // (which persists the product and drives the list by its ticker); otherwise the
+  // trimmed text becomes the `q` param. Either way we reset to the first page.
   useEffect(() => {
     const id = window.setTimeout(() => {
-      setDebouncedQ(query.trim());
+      const trimmed = query.trim();
+      if (ISIN_RE.test(trimmed)) {
+        void resolveIsin(trimmed.toUpperCase());
+        return;
+      }
+      // Plain text search: invalidate any in-flight ISIN lookup and clear its UI.
+      isinSeqRef.current += 1;
+      isinInFlightRef.current = null;
+      setIsinResolving(null);
+      setIsinBanner(null);
+      setIsinError(null);
+      setDebouncedQ(trimmed);
       setPage(1);
     }, SEARCH_DEBOUNCE_MS);
     return () => window.clearTimeout(id);
-  }, [query]);
+  }, [query, resolveIsin]);
 
   const load = useCallback(
     async (opts: { silent?: boolean } = {}) => {
@@ -327,10 +385,12 @@ export default function MarketPage() {
               type="search"
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              placeholder="Cerca per ticker, nome o settore…"
+              placeholder="Cerca per ticker, nome, settore o ISIN…"
               className="w-full rounded-lg border border-slate-700 bg-slate-900 py-2 pl-9 pr-3 text-sm text-slate-100 placeholder:text-slate-500 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
             />
           </div>
+
+          <InfoTip text={gloss("isin")} ariaLabel="Come cercare per codice ISIN" />
 
           <div className="flex items-center gap-2">
             <label htmlFor="market-page-size" className="text-xs text-slate-500">
@@ -368,6 +428,38 @@ export default function MarketPage() {
 
         {refreshNote ? <p className="text-xs text-brand-200">{refreshNote}</p> : null}
       </div>
+
+      {isinResolving ? (
+        <div className="flex items-center gap-2 rounded-lg border border-brand-700/60 bg-brand-900/30 px-4 py-2.5 text-xs text-brand-200">
+          <Spinner size="sm" />
+          Ricerca ISIN <span className="font-semibold tabular-nums">{isinResolving}</span>…
+        </div>
+      ) : null}
+
+      {isinBanner ? (
+        <div className="flex items-start gap-2 rounded-lg border border-brand-700/60 bg-brand-900/30 px-4 py-2.5 text-xs text-brand-200">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" className="mt-0.5 shrink-0" aria-hidden="true">
+            <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="1.8" />
+            <path d="M8.5 12.2l2.4 2.4 4.6-5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+          <span>
+            ISIN <span className="font-semibold tabular-nums">{isinBanner.isin}</span> →{" "}
+            <span className="font-semibold">{isinBanner.ticker}</span>
+            {isinBanner.name ? <span className="text-brand-200/80"> — {isinBanner.name}</span> : null}
+          </span>
+        </div>
+      ) : null}
+
+      {isinError ? (
+        <ErrorBox
+          message={isinError}
+          onRetry={() => {
+            const trimmed = query.trim();
+            if (ISIN_RE.test(trimmed)) void resolveIsin(trimmed.toUpperCase());
+            else setIsinError(null);
+          }}
+        />
+      ) : null}
 
       {shouldPoll ? (
         <div className="flex items-center gap-2 rounded-lg border border-brand-700/60 bg-brand-900/30 px-4 py-2.5 text-xs text-brand-200">

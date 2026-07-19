@@ -68,19 +68,25 @@ async def get_prices(
     await _refresh_if_stale(db, symbol, interval)
 
     cutoff = datetime.utcnow() - timedelta(days=days)
-    rows = (
+    # Indicators need warm-up BEFORE the requested window (SMA200 alone needs
+    # 200 trading bars ≈ 290 calendar days): load an extended window, compute
+    # on the whole frame, then slice the series back to the visible points —
+    # otherwise long indicators (SMA200 in a 180-day chart) are always None.
+    cutoff_extended = cutoff - timedelta(days=320)
+    all_rows = (
         db.execute(
             select(PriceHistory)
             .where(
                 PriceHistory.symbol_id == symbol_id,
                 PriceHistory.interval == interval,
-                PriceHistory.ts >= cutoff,
+                PriceHistory.ts >= cutoff_extended,
             )
             .order_by(PriceHistory.ts.asc())
         )
         .scalars()
         .all()
     )
+    rows = [r for r in all_rows if r.ts >= cutoff]
 
     points = [
         PricePoint(ts=r.ts, open=r.open, high=r.high, low=r.low, close=r.close, volume=r.volume)
@@ -91,16 +97,21 @@ async def get_prices(
     if indicators and points:
         df = pd.DataFrame(
             {
-                "open": [r.open for r in rows],
-                "high": [r.high for r in rows],
-                "low": [r.low for r in rows],
-                "close": [r.close for r in rows],
-                "volume": [r.volume for r in rows],
+                "open": [r.open for r in all_rows],
+                "high": [r.high for r in all_rows],
+                "low": [r.low for r in all_rows],
+                "close": [r.close for r in all_rows],
+                "volume": [r.volume for r in all_rows],
             },
-            index=pd.to_datetime([r.ts for r in rows]),
+            index=pd.to_datetime([r.ts for r in all_rows]),
         )
         computed = compute_all(df)
-        series_only = {k: v for k, v in computed.items() if k != "latest"}
+        visible = len(points)
+        series_only = {
+            k: (v[-visible:] if isinstance(v, list) else v)
+            for k, v in computed.items()
+            if k != "latest"
+        }
         indicator_series = IndicatorSeries(**series_only)
 
     return PriceHistoryOut(

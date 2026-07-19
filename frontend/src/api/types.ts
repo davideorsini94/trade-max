@@ -95,6 +95,11 @@ export interface SymbolOverviewOut {
 
 // --- Universe (Mercato) ---
 
+/** Body for POST /api/universe/isin. The 12-char ISIN is trimmed+uppercased server-side. */
+export interface IsinResolveRequest {
+  isin: string;
+}
+
 export interface UniverseItemOut {
   ticker: string;
   name: string;

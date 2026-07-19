@@ -208,6 +208,11 @@ export const GLOSSARY: Record<string, GlossEntry> = {
     short:
       "Punteggio da 0 a 100 che unisce bassa volatilità, un trend di lungo periodo sano e grandi dimensioni dell'azienda. Più è alto, più il titolo è considerato stabile e solido; non è una garanzia di guadagno.",
   },
+  isin: {
+    term: "ISIN",
+    short:
+      "ISIN: codice internazionale di 12 caratteri che identifica in modo univoco un prodotto finanziario (azione, ETF, obbligazione). Lo trovi nei documenti della tua banca.",
+  },
   market_open: {
     term: "Mercato aperto",
     short:
@@ -531,7 +536,7 @@ export const GLOSSARY_SECTIONS: ReadonlyArray<{ title: string; keys: readonly st
   },
   {
     title: "Mercato",
-    keys: ["composite", "fame", "trend_30d", "market_value", "reliability"],
+    keys: ["composite", "fame", "trend_30d", "market_value", "reliability", "isin"],
   },
   {
     title: "Rischio e protezioni",

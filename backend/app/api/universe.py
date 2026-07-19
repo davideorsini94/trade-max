@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
+from collections.abc import Sequence
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import case, func, or_, select
@@ -21,9 +23,10 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
 from app.data import universe
+from app.data.market import MarketDataService
 from app.db import session_scope
 from app.models import Symbol, UniverseStat
-from app.schemas import UniverseItemOut, UniversePageOut
+from app.schemas import UniverseIsinLookup, UniverseItemOut, UniversePageOut
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +35,13 @@ router = APIRouter(tags=["universe"])
 # page_size clamp bounds (blueprint spec).
 _PAGE_SIZE_MIN = 5
 _PAGE_SIZE_MAX = 100
+
+# ISIN format: 2-letter country code, 9 alphanumeric chars, 1 check digit.
+_ISIN_RE = re.compile(r"^[A-Z]{2}[A-Z0-9]{9}[0-9]$")
+
+# Provider result asset types worth preferring when an ISIN resolves to several
+# quotes (an actual tradable product rather than an index/option/etc.).
+_PREFERRED_ASSET_TYPES = ("EQUITY", "ETF")
 
 # sort key -> orderable column. "fame" uses composite_score as a tiebreak.
 _SORT_COLUMNS = {
@@ -80,6 +90,64 @@ def _nulls_last(column, descending: bool) -> list:
     null_flag = case((column.is_(None), 1), else_=0).asc()
     direction = column.desc() if descending else column.asc()
     return [null_flag, direction]
+
+
+def _monitoring_state(db: Session, tickers: Sequence[str]) -> dict[str, tuple[int, bool]]:
+    """Map ``ticker`` (upper-cased) -> ``(symbol_id, is_favorite)`` for the tickers
+    that are currently monitored as a :class:`~app.models.Symbol`.
+
+    A single query; tickers absent from the result are simply not monitored.
+    """
+    tickers = list(tickers)
+    symbol_map: dict[str, tuple[int, bool]] = {}
+    if tickers:
+        for sym_id, sym_ticker, sym_fav in db.execute(
+            select(Symbol.id, Symbol.ticker, Symbol.is_favorite).where(
+                Symbol.ticker.in_(tickers)
+            )
+        ).all():
+            symbol_map[sym_ticker.upper()] = (sym_id, bool(sym_fav))
+    return symbol_map
+
+
+def _to_universe_item(
+    row: UniverseStat, symbol_map: dict[str, tuple[int, bool]]
+) -> UniverseItemOut:
+    """Build a :class:`UniverseItemOut` from a stat row plus its monitoring state.
+
+    ``symbol_map`` is the mapping returned by :func:`_monitoring_state`; a ticker
+    absent from it is reported as not monitored / not favorite / no symbol id.
+    """
+    sym = symbol_map.get(row.ticker.upper())
+    item = UniverseItemOut.model_validate(row)
+    item.monitored = sym is not None
+    item.is_favorite = sym[1] if sym is not None else False
+    item.symbol_id = sym[0] if sym is not None else None
+    return item
+
+
+def _pick_ticker(results: Sequence[dict]) -> str | None:
+    """Pick the best resolved ticker from provider search results.
+
+    Prefers a result whose ``asset_type`` is an actual tradable product
+    (EQUITY/ETF); otherwise falls back to the first result carrying a non-empty
+    ticker. Returns ``None`` when no result has a usable ticker.
+    """
+    usable: list[tuple[str, str]] = []
+    for item in results or []:
+        if not isinstance(item, dict):
+            continue
+        ticker = str(item.get("ticker") or "").strip().upper()
+        if not ticker:
+            continue
+        asset_type = str(item.get("asset_type") or "").strip().upper()
+        usable.append((ticker, asset_type))
+    if not usable:
+        return None
+    for ticker, asset_type in usable:
+        if asset_type in _PREFERRED_ASSET_TYPES:
+            return ticker
+    return usable[0][0]
 
 
 @router.get("/universe", response_model=UniversePageOut)
@@ -132,24 +200,8 @@ async def get_universe(
     )
 
     # Single query mapping ticker -> monitoring state.
-    symbol_map: dict[str, tuple[int, bool]] = {}
-    tickers = [row.ticker for row in rows]
-    if tickers:
-        for sym_id, sym_ticker, sym_fav in db.execute(
-            select(Symbol.id, Symbol.ticker, Symbol.is_favorite).where(
-                Symbol.ticker.in_(tickers)
-            )
-        ).all():
-            symbol_map[sym_ticker.upper()] = (sym_id, bool(sym_fav))
-
-    items: list[UniverseItemOut] = []
-    for row in rows:
-        sym = symbol_map.get(row.ticker.upper())
-        item = UniverseItemOut.model_validate(row)
-        item.monitored = sym is not None
-        item.is_favorite = sym[1] if sym is not None else False
-        item.symbol_id = sym[0] if sym is not None else None
-        items.append(item)
+    symbol_map = _monitoring_state(db, [row.ticker for row in rows])
+    items = [_to_universe_item(row, symbol_map) for row in rows]
 
     last_refresh = db.execute(select(func.max(UniverseStat.updated_at))).scalar_one()
 
@@ -170,3 +222,57 @@ async def refresh_universe_endpoint() -> dict[str, str]:
         raise HTTPException(status_code=409, detail="Aggiornamento già in corso.")
     _kick_background_refresh()
     return {"detail": "Aggiornamento avviato."}
+
+
+@router.post("/universe/isin", response_model=UniverseItemOut)
+async def add_universe_by_isin(
+    payload: UniverseIsinLookup, db: Session = Depends(get_db)
+) -> UniverseItemOut:
+    """Resolve an ISIN to a product and persist it into the curated universe.
+
+    The user types an ISIN; we resolve it to a ticker via the market-data
+    provider search (Yahoo's search endpoint accepts ISIN queries), compute the
+    same market stats/scores as the batch refresh and upsert the row into
+    ``universe_stats`` so it appears in the Mercato list from now on. The
+    resolved product is returned with the same monitoring state
+    (monitored/is_favorite/symbol_id) as ``GET /api/universe``.
+    """
+    isin = (payload.isin or "").strip().upper()
+    if not _ISIN_RE.match(isin):
+        raise HTTPException(status_code=400, detail="ISIN non valido.")
+
+    # Resolve ISIN -> ticker via the provider search (blocking -> to_thread).
+    try:
+        results = await asyncio.to_thread(MarketDataService().search, isin)
+    except Exception as exc:
+        logger.warning("Ricerca ISIN fallita per %s", isin, exc_info=True)
+        raise HTTPException(
+            status_code=502,
+            detail="Servizio dati di mercato non disponibile. Riprova più tardi.",
+        ) from exc
+
+    ticker = _pick_ticker(results or [])
+    if not ticker:
+        raise HTTPException(
+            status_code=404, detail="Nessun prodotto trovato per questo ISIN."
+        )
+
+    # Compute stats + upsert the universe row (blocking -> to_thread).
+    try:
+        row = await asyncio.to_thread(universe.refresh_single_ticker, db, ticker)
+    except Exception as exc:
+        logger.warning(
+            "refresh_single_ticker fallito per %s (ISIN %s)", ticker, isin, exc_info=True
+        )
+        raise HTTPException(
+            status_code=502,
+            detail="Servizio dati di mercato non disponibile. Riprova più tardi.",
+        ) from exc
+
+    if row is None:
+        raise HTTPException(
+            status_code=404, detail="Nessun prodotto trovato per questo ISIN."
+        )
+
+    symbol_map = _monitoring_state(db, [row.ticker])
+    return _to_universe_item(row, symbol_map)
