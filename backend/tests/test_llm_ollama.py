@@ -302,10 +302,14 @@ def test_ollama_library_installed_flags(
 
     async def fake_fetch(base_url: str) -> list[dict]:
         return [
+            # variant of catalog "qwen2.5:7b" (same family AND size tag)
+            {
+                "name": "qwen2.5:7b-instruct-q4_K_M",
+                "size": 4_700_000_000,
+                "details": {"parameter_size": "7.6B"},
+            },
             # exact catalog id match
-            {"name": "qwen2.5:7b", "size": 4_700_000_000, "details": {"parameter_size": "7.6B"}},
-            # prefix match (family "llama3.2") for catalog "llama3.2:3b"
-            {"name": "llama3.2:latest", "size": 2_000_000_000, "details": {}},
+            {"name": "mistral:7b", "size": 4_100_000_000, "details": {}},
         ]
 
     monkeypatch.setattr(llm_api, "_fetch_ollama_tags", fake_fetch)
@@ -313,15 +317,18 @@ def test_ollama_library_installed_flags(
     body = client.get("/api/llm/ollama/library").json()
 
     installed_ids = {m["id"] for m in body["installed"]}
-    assert installed_ids == {"qwen2.5:7b", "llama3.2:latest"}
+    assert installed_ids == {"qwen2.5:7b-instruct-q4_K_M", "mistral:7b"}
     # size_bytes is carried through.
     by_id = {m["id"]: m for m in body["installed"]}
-    assert by_id["qwen2.5:7b"]["size_bytes"] == 4_700_000_000
+    assert by_id["qwen2.5:7b-instruct-q4_K_M"]["size_bytes"] == 4_700_000_000
 
     catalog = {c["id"]: c for c in body["catalog"]}
-    assert catalog["qwen2.5:7b"]["installed"] is True  # exact match
-    assert catalog["llama3.2:3b"]["installed"] is True  # family-prefix match
-    assert catalog["mistral:7b"]["installed"] is False
+    assert catalog["mistral:7b"]["installed"] is True  # exact match
+    assert catalog["qwen2.5:7b"]["installed"] is True  # full-id variant match
+    # Same family but DIFFERENT size: must NOT be flagged installed.
+    assert catalog["qwen2.5:14b"]["installed"] is False
+    assert catalog["qwen2.5:32b"]["installed"] is False
+    assert catalog["llama3.2:3b"]["installed"] is False
     # Curated catalog carries Italian descriptions + size hints.
     assert catalog["mistral:7b"]["description_it"]
     assert catalog["mistral:7b"]["size_hint"]

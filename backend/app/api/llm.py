@@ -804,8 +804,10 @@ async def ollama_library() -> OllamaLibraryOut:
     """Return the locally-installed models plus the curated downloadable catalog.
 
     400 when Ollama is not configured; 502 when the local server is unreachable.
-    Each catalog entry is flagged ``installed`` when its id (or its family prefix
-    before ``:``) matches a model already present on the server.
+    Each catalog entry is flagged ``installed`` when an installed model matches
+    its full id (family AND size tag): exact match or a variant-suffix match
+    like ``qwen2.5:7b-instruct-q4_K_M`` for ``qwen2.5:7b``. Family-only matching
+    would wrongly mark every size of an installed family as installed.
     """
     config = get_effective()
     if not config.ollama_configured:
@@ -818,17 +820,21 @@ async def ollama_library() -> OllamaLibraryOut:
 
     installed = _installed_library_from_tags(tags)
     installed_ids = {model.id for model in installed}
-    installed_prefixes = {model.id.split(":", 1)[0] for model in installed}
+
+    def _entry_installed(catalog_id: str) -> bool:
+        if catalog_id in installed_ids:
+            return True
+        # Variant match on the FULL id (family and size tag): "qwen2.5:7b"
+        # covers "qwen2.5:7b-instruct-q4_K_M" but never "qwen2.5:14b".
+        return any(model_id.startswith(f"{catalog_id}-") for model_id in installed_ids)
+
     catalog = [
         OllamaCatalogEntry(
             id=entry["id"],
             label=entry["label"],
             description_it=entry["description_it"],
             size_hint=entry["size_hint"],
-            installed=(
-                entry["id"] in installed_ids
-                or entry["id"].split(":", 1)[0] in installed_prefixes
-            ),
+            installed=_entry_installed(entry["id"]),
         )
         for entry in _OLLAMA_CATALOG
     ]
