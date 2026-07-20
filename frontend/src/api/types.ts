@@ -228,6 +228,10 @@ export interface RecommendationOut {
   estimated_profit_pct: number | null;
   estimated_profit_amount: number | null;
   rationale_it: string;
+  /** Consiglio per chi NON possiede ancora il titolo; null per raccomandazioni vecchie. */
+  advice_new_investor_it: string | null;
+  /** Consiglio per chi possiede GIÀ il titolo; null per raccomandazioni vecchie. */
+  advice_holder_it: string | null;
   validator_verdict: Verdict;
   validator_notes_it: string;
   policy_checks: PolicyCheck[];

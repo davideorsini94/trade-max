@@ -45,6 +45,20 @@ def reco_to_out(reco: Recommendation, ticker: str) -> RecommendationOut:
         raw_checks = []
     policy_checks = [PolicyCheck(**pc) for pc in raw_checks if isinstance(pc, dict)]
 
+    # The two audience-specific notes live in the persisted synthesizer output;
+    # parse defensively and expose empty/missing values as None (older rows).
+    try:
+        synth = json.loads(reco.synthesizer_json) if reco.synthesizer_json else {}
+    except (json.JSONDecodeError, TypeError):
+        logger.warning("synthesizer_json malformato per recommendation %s", reco.id)
+        synth = {}
+    if not isinstance(synth, dict):
+        synth = {}
+
+    def _advice(key: str) -> str | None:
+        value = synth.get(key)
+        return value.strip() if isinstance(value, str) and value.strip() else None
+
     return RecommendationOut(
         id=reco.id,
         run_id=reco.run_id,
@@ -63,6 +77,8 @@ def reco_to_out(reco: Recommendation, ticker: str) -> RecommendationOut:
         estimated_profit_pct=reco.estimated_profit_pct,
         estimated_profit_amount=reco.estimated_profit_amount,
         rationale_it=reco.rationale_it or "",
+        advice_new_investor_it=_advice("advice_new_investor_it"),
+        advice_holder_it=_advice("advice_holder_it"),
         validator_verdict=Verdict(reco.validator_verdict),
         validator_notes_it=reco.validator_notes_it or "",
         policy_checks=policy_checks,

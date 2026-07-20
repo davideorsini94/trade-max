@@ -241,6 +241,11 @@ class RecommendationOut(BaseModel):
     estimated_profit_pct: float | None
     estimated_profit_amount: float | None
     rationale_it: str
+    # Two audience-specific notes distilled by the synthesizer (persisted inside
+    # ``synthesizer_json``): guidance for someone about to invest vs. someone who
+    # already holds the shares. ``None`` for older recommendations that predate them.
+    advice_new_investor_it: str | None = None
+    advice_holder_it: str | None = None
     validator_verdict: Verdict
     validator_notes_it: str
     policy_checks: list[PolicyCheck]

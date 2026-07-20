@@ -84,6 +84,23 @@ user's money.
 - Use 6 to 10 short sentences and finish with the practical takeaway ("cosa significa \
 in pratica").
 
+Writing advice_new_investor_it and advice_holder_it (two SHORT, practical notes, in \
+addition to rationale_it):
+- advice_new_investor_it speaks to someone who does NOT own the stock yet: say clearly \
+whether to enter now, wait for a better level (state which price or condition), or stay \
+away — and why. 2 to 4 short sentences.
+- advice_holder_it speaks to someone who ALREADY owns the shares: say clearly whether to \
+keep, sell, take partial profits, or where to place the stop loss (state the level) — and \
+why. 2 to 4 short sentences.
+- BOTH must be CONSISTENT with your action, sizing_strategy, stop_loss_price and \
+take_profit_price. For example: a HOLD means "non comprare ora" for the newcomer and \
+"mantieni la posizione, con stop loss a X" for the holder; a BUY means "entra (così)" for \
+the newcomer and, for the holder, whether to aggiungere or simply mantenere con lo stop; a \
+SELL means "resta alla finestra / non comprare" for the newcomer and "vendi o riduci" for \
+the holder. Never contradict the proposal.
+- Follow the ITALIAN OUTPUT STYLE block (explain each financial term the first time you use \
+it) and end each with what it means in practice.
+
 Output STRICT JSON and NOTHING else — no markdown, no code fences, no text outside \
 the single JSON object. It MUST match exactly this schema:
 {
@@ -98,10 +115,13 @@ the single JSON object. It MUST match exactly this schema:
   "estimated_profit_pct": <number>,
   "agent_weights": {"technical": <0..1>, "fundamentals": <0..1>, "macro_news": <0..1>, "corporate_news": <0..1>},
   "dissent": "<main disagreement between analysts, or null>",
-  "rationale_it": "<6-10 sentences in ITALIAN, written like advice to a friend: what to do, why (citing the analysts' findings with every term explained on first use), the concrete risks, and what the stop loss / take profit levels mean in practice>"
+  "rationale_it": "<6-10 sentences in ITALIAN, written like advice to a friend: what to do, why (citing the analysts' findings with every term explained on first use), the concrete risks, and what the stop loss / take profit levels mean in practice>",
+  "advice_new_investor_it": "<2-4 short ITALIAN sentences for someone who does NOT own the stock yet: enter now, wait for which level, or stay away, and why — consistent with the action/sizing/levels>",
+  "advice_holder_it": "<2-4 short ITALIAN sentences for someone who ALREADY owns the shares: keep, sell, take partial profits, or where to set the stop loss, and why — consistent with the action/sizing/levels>"
 }
-All keys are required. rationale_it is in Italian; everything else uses the literals \
-above. Do not add keys that are not in the schema."""
+All keys are required. rationale_it, advice_new_investor_it and advice_holder_it are in \
+Italian; everything else uses the literals above. Do not add keys that are not in the \
+schema."""
 
 
 class SynthesizerAgent(BaseAgent):
@@ -109,9 +129,11 @@ class SynthesizerAgent(BaseAgent):
 
     name = "synthesizer"
     temperature = 0.25
-    # Bumped from 2000: rationale_it is now 6-10 sentences with inline term
-    # explanations, so the JSON payload needs more room to complete.
-    max_tokens = 2600
+    # Bumped from 2000 -> 2600 (rationale_it is 6-10 sentences with inline term
+    # explanations) -> 3000 now that the payload also carries two extra Italian
+    # notes (advice_new_investor_it / advice_holder_it), so the JSON needs room
+    # to complete.
+    max_tokens = 3000
 
     def _system_body(self) -> str:
         return _SYSTEM_BODY
@@ -207,6 +229,8 @@ class SynthesizerAgent(BaseAgent):
             "agent_weights": _coerce_weights(raw.get("agent_weights")),
             "dissent": coerce_optional_str(raw.get("dissent")),
             "rationale_it": coerce_str(raw.get("rationale_it"), ""),
+            "advice_new_investor_it": coerce_str(raw.get("advice_new_investor_it"), ""),
+            "advice_holder_it": coerce_str(raw.get("advice_holder_it"), ""),
         }
 
 

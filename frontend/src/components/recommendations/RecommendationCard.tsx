@@ -129,6 +129,27 @@ export default function RecommendationCard({
         </p>
       ) : null}
 
+      {reco.advice_new_investor_it || reco.advice_holder_it ? (
+        <div className="mt-4 grid grid-cols-1 gap-3 border-t border-[var(--tm-border)] pt-4 sm:grid-cols-2">
+          {reco.advice_new_investor_it ? (
+            <div className="rounded-lg border border-[var(--tm-border)] bg-[var(--tm-surface-2)] p-3">
+              <p className="mb-1.5 text-[0.65rem] font-semibold uppercase tracking-wider text-slate-500">
+                Se stai valutando di entrare
+              </p>
+              <p className="text-sm leading-relaxed text-slate-300">{reco.advice_new_investor_it}</p>
+            </div>
+          ) : null}
+          {reco.advice_holder_it ? (
+            <div className="rounded-lg border border-[var(--tm-border)] bg-[var(--tm-surface-2)] p-3">
+              <p className="mb-1.5 text-[0.65rem] font-semibold uppercase tracking-wider text-slate-500">
+                Se possiedi già il titolo
+              </p>
+              <p className="text-sm leading-relaxed text-slate-300">{reco.advice_holder_it}</p>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
       <div className="mt-4 border-t border-[var(--tm-border)] pt-4">
         <div className="flex items-center gap-2">
           <Badge variant={verdictBadgeVariant(reco.validator_verdict)}>{VERDICT_LABELS_IT[reco.validator_verdict]}</Badge>
