@@ -1,6 +1,6 @@
 """Synthesizer agent (blueprint 5.4).
 
-The chief investment strategist: combines the four analyst reports into a single
+The chief investment strategist: combines the five analyst reports into a single
 conservative, actionable proposal (action + sizing + allocation + levels +
 rationale). Consumes aggregated inputs rather than a raw ``AgentContext``, so it
 overrides ``run``/``build_user_prompt`` while reusing ``BaseAgent`` helpers and
@@ -30,14 +30,21 @@ from app.schemas import Action, Sizing
 ACTION_VALUES: frozenset[str] = frozenset(a.value for a in Action)
 SIZING_VALUES: frozenset[str] = frozenset(s.value for s in Sizing)
 
-#: The four analyst slots the synthesizer expects, in canonical order.
-ANALYST_KEYS: tuple[str, ...] = ("technical", "fundamentals", "macro_news", "corporate_news")
+#: The five analyst slots the synthesizer expects, in canonical order.
+ANALYST_KEYS: tuple[str, ...] = (
+    "technical",
+    "fundamentals",
+    "macro_news",
+    "corporate_news",
+    "sentiment",
+)
 
 _DEFAULT_WEIGHTS: dict[str, float] = {
-    "technical": 0.3,
-    "fundamentals": 0.3,
-    "macro_news": 0.2,
-    "corporate_news": 0.2,
+    "technical": 0.25,
+    "fundamentals": 0.25,
+    "macro_news": 0.15,
+    "corporate_news": 0.15,
+    "sentiment": 0.2,
 }
 
 _SYSTEM_BODY = """\
@@ -45,8 +52,9 @@ You are the chief investment strategist of a CONSERVATIVE advisory desk. Your \
 non-negotiable priority is CAPITAL PRESERVATION: missing a gain is acceptable, taking \
 a large loss is not. This is advisory only — you never execute orders.
 
-You are given four analyst reports — technical, fundamentals, macro, and corporate \
-news. A report may be null when that analyst failed; simply weight it as absent and \
+You are given five analyst reports - technical, fundamentals, macro, corporate news, \
+and market sentiment (analyst consensus, insider and institutional positioning, short \
+interest). A report may be null when that analyst failed; simply weight it as absent and \
 lean on the others (and lower overall confidence when coverage is thin).
 
 How to combine them:
@@ -113,7 +121,7 @@ the single JSON object. It MUST match exactly this schema:
   "stop_loss_price": <number or null>,
   "take_profit_price": <number or null>,
   "estimated_profit_pct": <number>,
-  "agent_weights": {"technical": <0..1>, "fundamentals": <0..1>, "macro_news": <0..1>, "corporate_news": <0..1>},
+  "agent_weights": {"technical": <0..1>, "fundamentals": <0..1>, "macro_news": <0..1>, "corporate_news": <0..1>, "sentiment": <0..1>},
   "dissent": "<main disagreement between analysts, or null>",
   "rationale_it": "<6-10 sentences in ITALIAN, written like advice to a friend: what to do, why (citing the analysts' findings with every term explained on first use), the concrete risks, and what the stop loss / take profit levels mean in practice>",
   "advice_new_investor_it": "<2-4 short ITALIAN sentences for someone who does NOT own the stock yet: enter now, wait for which level, or stay away, and why — consistent with the action/sizing/levels>",
@@ -125,7 +133,7 @@ schema."""
 
 
 class SynthesizerAgent(BaseAgent):
-    """Combines the four analyst reports into a single conservative proposal."""
+    """Combines the five analyst reports into a single conservative proposal."""
 
     name = "synthesizer"
     temperature = 0.25
@@ -235,7 +243,7 @@ class SynthesizerAgent(BaseAgent):
 
 
 def _coerce_weights(value: Any) -> dict[str, float]:
-    """Coerce ``agent_weights`` into the four canonical keys, each clamped to [0, 1]."""
+    """Coerce ``agent_weights`` into the five canonical keys, each clamped to [0, 1]."""
     raw = value if isinstance(value, dict) else {}
     return {
         key: clamp(coerce_float(raw.get(key), _DEFAULT_WEIGHTS[key]), 0.0, 1.0)

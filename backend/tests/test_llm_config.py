@@ -27,6 +27,7 @@ AGENT_NAMES = (
     "fundamentals",
     "macro_news",
     "corporate_news",
+    "sentiment",
     "synthesizer",
     "validator",
 )
@@ -381,10 +382,10 @@ def test_compact_json_rounds_floats() -> None:
 def test_deterministic_skips_when_inputs_empty() -> None:
     from app.engine.orchestrator import _deterministic_analyst_outputs
 
-    data = {"macro_news": [], "corporate_news": [], "fundamentals": {}}
+    data = {"macro_news": [], "corporate_news": [], "fundamentals": {}, "sentiment": {}}
     skips = _deterministic_analyst_outputs(data)
 
-    assert set(skips) == {"macro_news", "corporate_news", "fundamentals"}
+    assert set(skips) == {"macro_news", "corporate_news", "fundamentals", "sentiment"}
     assert "technical" not in skips  # the technical analyst is never skipped
     for name, out in skips.items():
         assert out["stance"] == "NEUTRAL"
@@ -411,6 +412,7 @@ def test_deterministic_no_skips_when_data_present() -> None:
             "market_cap": None,
             "beta": None,
         },
+        "sentiment": {"recommendation_mean": 2.0},
     }
     assert _deterministic_analyst_outputs(data) == {}
 

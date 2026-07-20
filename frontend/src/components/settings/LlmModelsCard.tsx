@@ -32,6 +32,7 @@ const EMPTY_PER_AGENT: LlmPerAgentConfig = {
   fundamentals: null,
   macro_news: null,
   corporate_news: null,
+  sentiment: null,
   synthesizer: null,
   validator: null,
 };
@@ -193,6 +194,7 @@ export default function LlmModelsCard({ refreshToken }: LlmModelsCardProps = {})
           fundamentals: cleanRef(perAgent.fundamentals),
           macro_news: cleanRef(perAgent.macro_news),
           corporate_news: cleanRef(perAgent.corporate_news),
+          sentiment: cleanRef(perAgent.sentiment),
           synthesizer: cleanRef(perAgent.synthesizer),
           validator: cleanRef(perAgent.validator),
         },

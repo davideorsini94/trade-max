@@ -1,6 +1,6 @@
 /**
  * Italian copy shared across components: enum -> label translations and the
- * six-agent registry (mirrors backend/app/agents/__init__.py ANALYST_AGENTS
+ * seven-agent registry (mirrors backend/app/agents/__init__.py ANALYST_AGENTS
  * plus the synthesizer/validator, see BLUEPRINT.md section 5.4).
  */
 import type { Action, RiskProfile, RunStatus, Sizing, Stance, Verdict } from "../api/types";
@@ -58,12 +58,13 @@ export const RISK_PROFILE_DESCRIPTIONS_IT: Record<RiskProfile, string> = {
     "Più propenso al rischio: posizioni fino al 30%, riserva liquidità minima 10%, soglie di confidenza più basse.",
 };
 
-/** The six pipeline agents, in the fixed execution order used by the orchestrator. */
+/** The seven pipeline agents, in the fixed execution order used by the orchestrator. */
 export const AGENT_ORDER = [
   "technical",
   "fundamentals",
   "macro_news",
   "corporate_news",
+  "sentiment",
   "synthesizer",
   "validator",
 ] as const;
@@ -75,6 +76,7 @@ export const AGENT_LABELS_IT: Record<AgentName, string> = {
   fundamentals: "Analista Fondamentale",
   macro_news: "Analista Macro",
   corporate_news: "Analista News Societarie",
+  sentiment: "Analista Sentiment",
   synthesizer: "Sintetizzatore",
   validator: "Validatore Rischio",
 };
@@ -84,6 +86,7 @@ export const AGENT_SHORT_DESCRIPTIONS_IT: Record<AgentName, string> = {
   fundamentals: "Valutazione e solidità finanziaria",
   macro_news: "Contesto macroeconomico",
   corporate_news: "Notizie e catalizzatori societari",
+  sentiment: "Consenso analisti, insider e istituzionali",
   synthesizer: "Sintesi della raccomandazione",
   validator: "Controllo del rischio",
 };

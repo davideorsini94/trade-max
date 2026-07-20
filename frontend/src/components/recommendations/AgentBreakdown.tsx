@@ -19,6 +19,7 @@ const AGENT_GLOSS_KEY: Record<AgentName, string> = {
   fundamentals: "agent_fundamentals",
   macro_news: "agent_macro",
   corporate_news: "agent_corporate",
+  sentiment: "agent_sentiment",
   synthesizer: "synthesizer",
   validator: "validator",
 };

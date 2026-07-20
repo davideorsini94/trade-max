@@ -31,6 +31,10 @@ signal, histogram sign and expansion/contraction).
 and high ATR mean lower conviction and larger risk.
 - Support / resistance: the 52-week high/low range and recent swing levels implied \
 by the close series.
+- Relative strength: relative_performance compares the stock's 30/90-day change to \
+its benchmark index (the relative_30d_pct / relative_90d_pct fields, expressed in \
+percentage points). Persistent UNDERperformance of the benchmark argues against \
+bullish signals, while OUTperformance supports them.
 
 Discipline:
 - Be conservative. When indicators conflict (e.g. bullish trend but overbought RSI, \
@@ -75,6 +79,7 @@ class TechnicalAnalystAgent(BaseAgent):
             "symbol": symbol_descriptor(ctx.symbol),
             "price_summary": ctx.price_summary,
             "indicators": ctx.indicators,
+            "relative_performance": ctx.relative_performance,
         }
         return (
             "Analyze the following technical data and respond with the JSON object "

@@ -53,6 +53,9 @@ expensive name with weak fundamentals?
 over-sized position?
 - Stop-loss adequacy: is the stop realistic and close enough to cap the loss, or \
 missing/too far?
+- Positioning risk: is heavy insider SELLING, a DETERIORATING analyst consensus, or \
+HIGH short interest working against a bullish proposal? The days_to_next_earnings \
+value in the risk metrics tells you whether a binary earnings event is imminent.
 
 Use the deterministic risk metrics provided (ATR as % of price, 90-day drawdown, \
 beta, and distance from the SMA200) as hard evidence — they are computed, not \

@@ -13,6 +13,7 @@ const AGENT_COLORS: Record<string, string> = {
   fundamentals: "#f5b942",
   macro_news: "#a78bfa",
   corporate_news: "#fb923c",
+  sentiment: "#22d3ee",
   synthesizer: "#34d399",
   validator: "#fb7185",
 };

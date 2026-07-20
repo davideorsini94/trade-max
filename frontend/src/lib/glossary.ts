@@ -181,6 +181,31 @@ export const GLOSSARY: Record<string, GlossEntry> = {
     short:
       "L'area di attività a cui appartiene l'azienda (per esempio tecnologia, sanità, energia). Aiuta a inquadrare il titolo e a confrontarlo con aziende simili.",
   },
+  analyst_consensus: {
+    term: "Consenso degli analisti",
+    short:
+      "La media dei giudizi (compra/mantieni/vendi) espressi dagli analisti professionisti che seguono il titolo. Un consenso in miglioramento è spesso un segnale positivo, ma il dato è poco affidabile se sono pochi gli analisti che coprono il titolo.",
+  },
+  insider_transactions: {
+    term: "Operazioni degli insider",
+    short:
+      "Gli acquisti e le vendite di azioni fatti dai dirigenti e dagli amministratori della società stessa. Quando comprano con soldi propri è spesso un segnale di fiducia, mentre le vendite pesano meno perché possono avere motivi personali non legati all'azienda.",
+  },
+  institutional_ownership: {
+    term: "Investitori istituzionali",
+    short:
+      "Fondi, banche e grandi gestori che detengono azioni del titolo. Un aumento delle loro quote segnala fiducia, una riduzione segnala prudenza; la loro presenza rende inoltre il titolo più seguito e più liquido.",
+  },
+  short_interest: {
+    term: "Posizioni ribassiste (short interest)",
+    short:
+      "La quota di azioni vendute allo scoperto, cioè scommesse che il prezzo scenda. Un valore alto indica una diffusa sfiducia, ma può anche amplificare rialzi improvvisi (il cosiddetto short squeeze).",
+  },
+  relative_strength: {
+    term: "Forza relativa",
+    short:
+      "Confronta l'andamento del titolo con quello del suo indice di riferimento (per esempio l'S&P 500 o il FTSE MIB). Un titolo che batte il mercato mostra forza relativa, uno che fa peggio mostra debolezza.",
+  },
 
   // --- Mercato (universo titoli) ---
   composite: {
@@ -299,6 +324,11 @@ export const GLOSSARY: Record<string, GlossEntry> = {
     term: "Analista News Societarie",
     short:
       "Segue le notizie sull'azienda (trimestrali, annunci, eventi) che possono muovere il prezzo nel breve periodo.",
+  },
+  agent_sentiment: {
+    term: "Analista Sentiment",
+    short:
+      "Osserva cosa stanno facendo i partecipanti al mercato più informati: i giudizi degli analisti professionisti (consenso), gli acquisti e le vendite di azioni da parte dei dirigenti dell'azienda (insider) e le mosse dei grandi investitori istituzionali, per capire da che parte pende il denaro informato.",
   },
   synthesizer: {
     term: "Sintetizzatore",
@@ -532,6 +562,11 @@ export const GLOSSARY_SECTIONS: ReadonlyArray<{ title: string; keys: readonly st
       "beta",
       "analyst_target",
       "sector",
+      "analyst_consensus",
+      "insider_transactions",
+      "institutional_ownership",
+      "short_interest",
+      "relative_strength",
     ],
   },
   {
@@ -563,6 +598,7 @@ export const GLOSSARY_SECTIONS: ReadonlyArray<{ title: string; keys: readonly st
       "agent_fundamentals",
       "agent_macro",
       "agent_corporate",
+      "agent_sentiment",
       "synthesizer",
       "validator",
       "llm_model",

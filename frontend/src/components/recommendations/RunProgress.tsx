@@ -13,16 +13,18 @@ const AGENT_GLOSS_KEY: Record<AgentName, string> = {
   fundamentals: "agent_fundamentals",
   macro_news: "agent_macro",
   corporate_news: "agent_corporate",
+  sentiment: "agent_sentiment",
   synthesizer: "synthesizer",
   validator: "validator",
 };
 
-/** The four analyst actors run in parallel; the tail (synth, validator) is sequential. */
+/** The five analyst actors run in parallel; the tail (synth, validator) is sequential. */
 const ANALYST_AGENTS: readonly AgentName[] = [
   "technical",
   "fundamentals",
   "macro_news",
   "corporate_news",
+  "sentiment",
 ];
 
 const STATUS_BADGE_VARIANT: Record<RunStatus, BadgeVariant> = {
@@ -73,7 +75,7 @@ interface RunProgressProps {
 /**
  * Prominent, navigation-resilient view of a single analysis run's progress:
  * a status header, a completed-actors progress bar and an ordered checklist of
- * the six pipeline actors plus the final recommendation, each with a check,
+ * the seven pipeline actors plus the final recommendation, each with a check,
  * cross or live spinner. Fed by the 3s run polling on the symbol detail page.
  */
 export default function RunProgress({ run }: RunProgressProps) {
@@ -90,7 +92,7 @@ export default function RunProgress({ run }: RunProgressProps) {
     const analysis = byAgent.get(name);
     if (analysis) return analysis.status === "FAILED" ? "failed" : "done";
     if (!isActive) return "pending";
-    // Missing while running: the four analysts spin in parallel; the tail waits
+    // Missing while running: the five analysts spin in parallel; the tail waits
     // for its predecessor so only the actor actually working shows a spinner.
     if ((ANALYST_AGENTS as readonly string[]).includes(name)) return "running";
     if (name === "synthesizer") return allAnalystsPresent ? "running" : "pending";

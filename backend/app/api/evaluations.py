@@ -16,9 +16,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
-from app.evaluation.evaluator import run_weekly_evaluation
+from app.evaluation.evaluator import get_pending_status, run_weekly_evaluation
 from app.models import AgentFeedback, Evaluation
-from app.schemas import AgentMetrics, EvaluationOut
+from app.schemas import AgentMetrics, EvaluationOut, PendingEvaluationOut
 
 logger = logging.getLogger(__name__)
 
@@ -106,6 +106,12 @@ def list_evaluations(
         .all()
     )
     return [evaluation_to_out(db, ev) for ev in rows]
+
+
+@router.get("/evaluations/pending", response_model=PendingEvaluationOut)
+def get_pending_evaluations(db: Session = Depends(get_db)) -> PendingEvaluationOut:
+    """Not-yet-scoreable recommendations (need 7 days of history to be scored)."""
+    return PendingEvaluationOut(**get_pending_status(db))
 
 
 @router.get("/evaluations/{evaluation_id}", response_model=EvaluationOut)

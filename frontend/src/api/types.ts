@@ -276,6 +276,12 @@ export interface EvaluationOut {
   created_at: string;
 }
 
+export interface PendingEvaluationOut {
+  pending_count: number;
+  ready_count: number;
+  next_evaluable_at: string | null;
+}
+
 export interface AgentFeedbackOut {
   id: number;
   evaluation_id: number;
@@ -368,6 +374,7 @@ export interface LlmPerAgentConfig {
   fundamentals: LlmModelRef | null;
   macro_news: LlmModelRef | null;
   corporate_news: LlmModelRef | null;
+  sentiment: LlmModelRef | null;
   synthesizer: LlmModelRef | null;
   validator: LlmModelRef | null;
 }

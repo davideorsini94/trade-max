@@ -97,6 +97,9 @@ class AgentContext:
     corporate_news: list[dict[str, Any]]
     risk_profile: str
     lessons: list[str] = field(default_factory=list)
+    sentiment: dict[str, Any] = field(default_factory=dict)
+    relative_performance: dict[str, Any] = field(default_factory=dict)
+    calendar: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass

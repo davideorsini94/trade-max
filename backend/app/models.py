@@ -306,10 +306,11 @@ class LlmModelPref(Base):
     """Per-actor / default LLM provider+model override (blueprint: model selection).
 
     ``agent_name`` is the primary key: either the literal ``"default"`` (the
-    desk-wide fallback) or one of the six pipeline actor names (``technical``,
-    ``fundamentals``, ``macro_news``, ``corporate_news``, ``synthesizer``,
-    ``validator``). A missing row means "use the env-configured provider/model";
-    resolution (agent -> default -> env) lives in ``app.llm.prefs``.
+    desk-wide fallback) or one of the seven pipeline actor names (``technical``,
+    ``fundamentals``, ``macro_news``, ``corporate_news``, ``sentiment``,
+    ``synthesizer``, ``validator``). A missing row means "use the env-configured
+    provider/model"; resolution (agent -> default -> env) lives in
+    ``app.llm.prefs``.
     """
 
     __tablename__ = "llm_model_prefs"

@@ -29,9 +29,15 @@ from app.models import AgentFeedback, Analysis, Evaluation, Recommendation, Symb
 
 logger = logging.getLogger(__name__)
 
-# Mirror of the six pipeline actors (kept local so feedback never imports the
+# Mirror of the seven pipeline actors (kept local so feedback never imports the
 # evaluator module — that would be a cycle).
-ANALYST_AGENTS: tuple[str, ...] = ("technical", "fundamentals", "macro_news", "corporate_news")
+ANALYST_AGENTS: tuple[str, ...] = (
+    "technical",
+    "fundamentals",
+    "macro_news",
+    "corporate_news",
+    "sentiment",
+)
 AGENT_NAMES: tuple[str, ...] = ANALYST_AGENTS + ("synthesizer", "validator")
 
 # Keep only this many of an agent's most recent feedback rows active.
@@ -257,7 +263,7 @@ def _coerce_lessons(data: dict) -> tuple[list[str], str]:
 
 
 async def generate_lessons(evaluation_id: int) -> None:
-    """Generate + persist per-agent lessons for one evaluation (all six agents)."""
+    """Generate + persist per-agent lessons for one evaluation (all seven agents)."""
     # Phase 1: gather everything needed, in a single short read window.
     with session_scope() as db:
         evaluation = db.get(Evaluation, evaluation_id)

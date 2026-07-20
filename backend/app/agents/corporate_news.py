@@ -35,6 +35,9 @@ What to look for:
 - M&A, partnerships, major contracts, product launches or recalls.
 - Litigation, fines, management changes.
 - Public statements by influential figures quoted in the items.
+- The provided calendar's next_earnings_date and days_to_earnings fields: a \
+scheduled earnings report within the horizon is a RISK to flag, not a realized \
+catalyst.
 
 Source weighting:
 - Regulatory filings (SEC EDGAR) are more reliable than press articles; press is more \
@@ -102,6 +105,7 @@ class CorporateNewsAnalystAgent(BaseAgent):
         payload: dict[str, Any] = {
             "symbol": symbol_descriptor(ctx.symbol),
             "corporate_news": ctx.corporate_news,
+            "calendar": ctx.calendar,
         }
         return (
             "Evaluate the company-specific catalysts in the following curated items "

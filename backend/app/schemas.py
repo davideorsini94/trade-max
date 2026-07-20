@@ -307,6 +307,17 @@ class EvaluationOut(BaseModel):
     created_at: datetime
 
 
+class PendingEvaluationOut(BaseModel):
+    """Not-yet-scoreable recommendations: makes the learning loop visible
+
+    before the first evaluation has enough 7-day-old data to run on.
+    """
+
+    pending_count: int
+    ready_count: int
+    next_evaluable_at: datetime | None
+
+
 class AgentFeedbackOut(BaseModel):
     id: int
     evaluation_id: int

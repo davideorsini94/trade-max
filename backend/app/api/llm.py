@@ -61,12 +61,13 @@ _OLLAMA_NOT_CONFIGURED = "Ollama non configurato (URL di base mancante)."
 #: Short timeout for the Ollama liveness probe (GET /api/version).
 _OLLAMA_PROBE_TIMEOUT_S = 5.0
 
-#: The six actor slots plus the desk-wide ``default`` slot.
+#: The seven actor slots plus the desk-wide ``default`` slot.
 _AGENT_NAMES: tuple[str, ...] = (
     "technical",
     "fundamentals",
     "macro_news",
     "corporate_news",
+    "sentiment",
     "synthesizer",
     "validator",
 )
@@ -573,7 +574,7 @@ def get_config(db: Session = Depends(get_db)) -> LlmConfigOut:
 def update_config(payload: LlmConfigUpdate, db: Session = Depends(get_db)) -> LlmConfigOut:
     """Replace the FULL desired LLM model-preference state.
 
-    The body carries the complete desired state: ``default`` and all six
+    The body carries the complete desired state: ``default`` and all seven
     ``per_agent`` entries. For each slot a present ``{provider, model}`` upserts
     the row and ``null`` (or an omitted slot) unsets it. Every non-null selection
     is validated (provider in {openrouter, gemini}, that provider configured, and

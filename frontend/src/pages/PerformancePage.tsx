@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { apiGet, apiPost, errorMessage, isConflict } from "../api/client";
-import type { AgentFeedbackOut, EvaluationOut } from "../api/types";
+import type { AgentFeedbackOut, EvaluationOut, PendingEvaluationOut } from "../api/types";
 import { useApi } from "../hooks/useApi";
 import Card from "../components/common/Card";
 import Spinner from "../components/common/Spinner";
@@ -35,6 +35,7 @@ export default function PerformancePage() {
     () => apiGet<AgentFeedbackOut[]>("/feedback", { active_only: true }),
     [],
   );
+  const pendingQuery = useApi<PendingEvaluationOut>(() => apiGet<PendingEvaluationOut>("/evaluations/pending"), []);
 
   const [running, setRunning] = useState(false);
   const [runError, setRunError] = useState<string | null>(null);
@@ -60,6 +61,7 @@ export default function PerformancePage() {
       await apiPost<EvaluationOut>("/evaluations/run");
       evaluationsQuery.refetch();
       feedbackQuery.refetch();
+      pendingQuery.refetch();
     } catch (err) {
       setRunError(isConflict(err) ? "Una valutazione è già in corso." : errorMessage(err));
     } finally {
@@ -80,11 +82,21 @@ export default function PerformancePage() {
   }
 
   const latest = evaluationsQuery.data?.[0] ?? null;
+  const pending = pendingQuery.data;
+  const hasNoHistoryYet = !latest && !pending?.pending_count && !pending?.ready_count;
 
   return (
     <div className="space-y-8">
       <div className="flex flex-wrap items-center justify-between gap-4">
-        <h1 className="text-xl font-bold text-slate-50">Performance</h1>
+        <div>
+          <h1 className="text-xl font-bold text-slate-50">Performance</h1>
+          <p className="mt-1 max-w-2xl text-sm leading-relaxed text-slate-400">
+            Ogni settimana i consigli con almeno 7 giorni di storico vengono confrontati con
+            l'andamento reale dei prezzi. Gli errori diventano lezioni che ogni agente applica
+            nelle analisi successive, per rendere i consigli sempre più precisi e affidabili nel
+            tempo.
+          </p>
+        </div>
         <div className="flex flex-col items-end gap-1">
           <button
             type="button"
@@ -98,9 +110,42 @@ export default function PerformancePage() {
         </div>
       </div>
 
-      {!latest ? (
+      {!pendingQuery.loading && !pendingQuery.error && pending && (pending.pending_count > 0 || pending.ready_count > 0) ? (
+        <Card title="Ciclo di apprendimento">
+          <p className="text-sm leading-relaxed text-slate-300">
+            {pending.ready_count > 0 ? (
+              <>
+                <span className="font-semibold text-slate-100">{pending.ready_count}</span>{" "}
+                {pending.ready_count === 1 ? "consiglio è maturo" : "consigli sono maturi"} (7+
+                giorni di storico) e{" "}
+                {pending.ready_count === 1 ? "verrà incluso" : "verranno inclusi"} nella prossima
+                valutazione.{" "}
+              </>
+            ) : null}
+            {pending.pending_count > 0 && pending.next_evaluable_at ? (
+              <>
+                Altri <span className="font-semibold text-slate-100">{pending.pending_count}</span>{" "}
+                {pending.pending_count === 1 ? "consiglio sta" : "consigli stanno"} ancora
+                maturando: il prossimo lotto sarà valutabile dal{" "}
+                <span className="font-semibold text-slate-100">
+                  {formatDateTimeIt(pending.next_evaluable_at)}
+                </span>
+                .
+              </>
+            ) : null}
+          </p>
+        </Card>
+      ) : null}
+
+      {hasNoHistoryYet ? (
         <div className="rounded-xl border border-dashed border-slate-700 bg-slate-900/40 px-6 py-8 text-center text-sm text-slate-400">
-          Nessuna valutazione settimanale disponibile ancora.
+          Nessun consiglio ancora generato: analizza un titolo dalla sua scheda per iniziare a
+          costruire lo storico su cui gli agenti impareranno.
+        </div>
+      ) : !latest ? (
+        <div className="rounded-xl border border-dashed border-slate-700 bg-slate-900/40 px-6 py-8 text-center text-sm text-slate-400">
+          Nessuna valutazione settimanale disponibile ancora: torna qui una volta maturato il
+          primo lotto di consigli.
         </div>
       ) : (
         <>

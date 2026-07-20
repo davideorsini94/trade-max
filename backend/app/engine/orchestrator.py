@@ -6,10 +6,10 @@
 2. refresh market data (prices, indicators, fundamentals, news) through the
    synchronous data-layer services, wrapped in ``asyncio.to_thread``;
 3. build one :class:`AgentContext` per analyst (with that agent's active
-   lessons) and fan out over the four analysts with
+   lessons) and fan out over the analysts with
    ``asyncio.gather(return_exceptions=True)``, persisting one ``Analysis`` row
    per actor (including FAILED ones);
-4. abort the run as FAILED if 3+ analysts failed;
+4. abort the run as FAILED once all-but-one of the analysts failed;
 5. run the synthesizer, then the adversarial validator, persisting each;
 6. apply the deterministic :class:`~app.engine.policy.PolicyEngine`;
 7. persist the final ``Recommendation`` and mark the run COMPLETED.
@@ -56,8 +56,10 @@ logger = logging.getLogger(__name__)
 #: Persisted error strings feed the UI; keep them bounded.
 _MAX_ERROR_CHARS = 2000
 
-#: A run is aborted once at least this many analysts fail (blueprint §5.5 step 4).
-_MIN_FAILED_ANALYSTS_TO_ABORT = 3
+#: A run is aborted once at least this many analysts fail (blueprint §5.5 step 4):
+#: one less than the total number of registered analysts (so with 5 analysts the
+#: run still proceeds while at least one analyst succeeded).
+_MIN_FAILED_ANALYSTS_TO_ABORT = len(ANALYST_AGENTS) - 1
 
 #: Prompt-slimming caps (persisted data is unaffected; these bound only what the
 #: LLM actors actually read, to minimise token cost without losing signal).
@@ -69,6 +71,15 @@ _MAX_RECENT_CLOSES = 20
 #: fundamentals (e.g. an ETF), so the fundamentals agent is deterministically
 #: skipped rather than paying for an LLM call over an empty payload.
 _FUNDAMENTALS_CORE_FIELDS: tuple[str, ...] = ("pe", "forward_pe", "eps", "market_cap", "beta")
+
+#: Core sentiment fields; when ALL are None AND there is no ratings_trend and no
+#: insider_transactions, the title has no usable sentiment data (common for many
+#: non-US tickers), so the sentiment agent is deterministically skipped.
+_SENTIMENT_CORE_FIELDS: tuple[str, ...] = (
+    "recommendation_mean",
+    "institutions_pct_held",
+    "short_percent_of_float",
+)
 
 #: Provider marker persisted for deterministic (no-LLM) analyst outputs.
 _DETERMINISTIC_PROVIDER = "deterministic"
@@ -112,6 +123,19 @@ _DET_FUNDAMENTALS: dict[str, Any] = {
         "mancanti dal provider)."
     ),
 }
+_DET_SENTIMENT: dict[str, Any] = {
+    "stance": "NEUTRAL",
+    "signal": 0.0,
+    "confidence": 0.2,
+    "consensus": "UNKNOWN",
+    "key_points": [],
+    "risks": [],
+    "data_quality": "POOR",
+    "summary_it": (
+        "Nessun dato disponibile su consenso degli analisti, operazioni degli insider "
+        "o investitori istituzionali per questo titolo dalle fonti monitorate."
+    ),
+}
 
 
 def _slim_news(items: Any) -> list[dict]:
@@ -139,6 +163,21 @@ def _fundamentals_are_empty(fundamentals: Any) -> bool:
     return all(fundamentals.get(field) is None for field in _FUNDAMENTALS_CORE_FIELDS)
 
 
+def _sentiment_is_empty(sentiment: Any) -> bool:
+    """True when there is nothing for the sentiment analyst to reason about.
+
+    That is: every core field (recommendation_mean, institutions_pct_held,
+    short_percent_of_float) is None AND there is no ratings_trend AND no
+    insider_transactions (common for many non-US tickers).
+    """
+    if not isinstance(sentiment, dict):
+        return True
+    core_all_none = all(sentiment.get(field) is None for field in _SENTIMENT_CORE_FIELDS)
+    return core_all_none and not sentiment.get("ratings_trend") and not sentiment.get(
+        "insider_transactions"
+    )
+
+
 def _deterministic_analyst_outputs(data: dict) -> dict[str, dict]:
     """Analyst outputs that can be produced WITHOUT an LLM call for this run.
 
@@ -154,6 +193,8 @@ def _deterministic_analyst_outputs(data: dict) -> dict[str, dict]:
         skips["corporate_news"] = dict(_DET_CORPORATE_NEWS)
     if _fundamentals_are_empty(data.get("fundamentals")):
         skips["fundamentals"] = dict(_DET_FUNDAMENTALS)
+    if _sentiment_is_empty(data.get("sentiment")):
+        skips["sentiment"] = dict(_DET_SENTIMENT)
     return skips
 
 
@@ -273,7 +314,7 @@ def _build_metrics(price_summary: dict, latest: dict) -> MarketMetrics:
     )
 
 
-def _build_risk_metrics(metrics: MarketMetrics, fundamentals: dict) -> dict:
+def _build_risk_metrics(metrics: MarketMetrics, fundamentals: dict, sentiment: dict) -> dict:
     """Deterministic risk metrics for the validator (blueprint §5.4/§5.5)."""
     atr_pct = None
     if metrics.atr14 is not None and metrics.last_close:
@@ -282,11 +323,15 @@ def _build_risk_metrics(metrics: MarketMetrics, fundamentals: dict) -> dict:
     if metrics.last_close is not None and metrics.sma200:
         distance = (metrics.last_close - metrics.sma200) / metrics.sma200 * 100.0
     beta = fundamentals.get("beta") if isinstance(fundamentals, dict) else None
+    days_to_next_earnings = (
+        sentiment.get("days_to_earnings") if isinstance(sentiment, dict) else None
+    )
     return {
         "atr_pct": atr_pct,
         "drawdown_90d_pct": metrics.drawdown_90d_pct,
         "beta": beta,
         "distance_from_sma200_pct": distance,
+        "days_to_next_earnings": days_to_next_earnings,
     }
 
 
@@ -446,6 +491,18 @@ def _gather_market_data(symbol_id: int, ticker: str) -> dict:
     latest = indicators_full.get("latest", {}) if isinstance(indicators_full, dict) else {}
     price_summary = market.price_summary(df_daily)
     fundamentals = market.get_fundamentals(ticker)
+    # Same synchronous/blocking pattern as the fundamentals/market calls above
+    # (this whole function already runs inside asyncio.to_thread at its call site).
+    sentiment = market.get_sentiment_snapshot(ticker)
+    relative_performance = market.get_relative_performance(
+        ticker,
+        price_summary.get("change_pct_30d"),
+        price_summary.get("change_pct_90d"),
+    )
+    calendar = {
+        "next_earnings_date": sentiment.get("next_earnings_date"),
+        "days_to_earnings": sentiment.get("days_to_earnings"),
+    }
 
     # Agent-facing indicators: scalar latest values + a compact recent-close series
     # capped at the most recent 20 closes (keeps prompt cost bounded).
@@ -458,7 +515,7 @@ def _gather_market_data(symbol_id: int, ticker: str) -> dict:
         indicators_ctx["recent_closes"] = []
 
     metrics = _build_metrics(price_summary, latest)
-    risk_metrics = _build_risk_metrics(metrics, fundamentals)
+    risk_metrics = _build_risk_metrics(metrics, fundamentals, sentiment)
 
     return {
         "price_summary": price_summary,
@@ -467,6 +524,9 @@ def _gather_market_data(symbol_id: int, ticker: str) -> dict:
         # News is capped/truncated for the prompts; persisted news_items are intact.
         "macro_news": _slim_news(macro_news),
         "corporate_news": _slim_news(corporate_news),
+        "sentiment": sentiment,
+        "relative_performance": relative_performance,
+        "calendar": calendar,
         "metrics": metrics,
         "risk_metrics": risk_metrics,
     }
@@ -509,7 +569,7 @@ async def _run_analysis_locked(symbol_id: int, trigger: str, run_id: int | None)
 
         llm = _get_llm()
 
-        # Phase 3: fan out over the four analysts (each with its own lessons).
+        # Phase 3: fan out over the analysts (each with its own lessons).
         def make_ctx(lessons: list[str]) -> AgentContext:
             return AgentContext(
                 symbol=prep["symbol_out"],
@@ -521,6 +581,9 @@ async def _run_analysis_locked(symbol_id: int, trigger: str, run_id: int | None)
                 corporate_news=data["corporate_news"],
                 risk_profile=prep["risk_profile"],
                 lessons=lessons,
+                sentiment=data["sentiment"],
+                relative_performance=data["relative_performance"],
+                calendar=data["calendar"],
             )
 
         # Deterministic skips: don't pay for an LLM call when an analyst has

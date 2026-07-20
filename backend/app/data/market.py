@@ -60,6 +60,62 @@ _PRICE_SUMMARY_EMPTY: dict[str, float | None] = {
 
 _TRADING_DAYS_52W = 252
 
+# --------------------------------------------------------------------------- #
+# Sentiment & relative-performance caches and constants (blueprint addendum)
+# --------------------------------------------------------------------------- #
+
+# In-memory sentiment cache: {ticker: (data, fetched_at)}. Mirrors the
+# fundamentals cache convention in ``app.api.symbols`` (same shape/logic); the
+# many ``Ticker`` sub-reads a snapshot needs are slow, so a recent snapshot is
+# reused. A fully-empty/failed snapshot is NOT cached, so a transient error
+# self-heals on the next call.
+_SENTIMENT_CACHE_TTL = timedelta(minutes=60)
+_sentiment_cache: dict[str, tuple[dict, datetime]] = {}
+
+# In-memory benchmark-changes cache keyed by the BENCHMARK ticker (not the
+# stock), so one index fetch serves every symbol on that exchange for 6 hours.
+_BENCHMARK_CACHE_TTL = timedelta(hours=6)
+_benchmark_cache: dict[str, tuple[tuple[float | None, float | None], datetime]] = {}
+
+# Exchange-suffix -> benchmark index (longest matching suffix wins). Index
+# tickers are Yahoo Finance symbols; the default fallback is the S&P 500.
+_BENCHMARK_SUFFIX_MAP: dict[str, str] = {
+    ".MI": "FTSEMIB.MI",
+    ".DE": "^GDAXI",
+    ".PA": "^FCHI",
+    ".L": "^FTSE",
+    ".AS": "^AEX",
+    ".MC": "^IBEX",
+    ".SW": "^SSMI",
+    ".TO": "^GSPTSE",
+}
+_DEFAULT_BENCHMARK = "^GSPC"
+
+
+def _empty_sentiment() -> dict:
+    """A fresh, fully-empty sentiment snapshot (every key present, safe defaults)."""
+    return {
+        "recommendation_mean": None,
+        "recommendation_key": None,
+        "analyst_count": None,
+        "target_mean": None,
+        "target_high": None,
+        "target_low": None,
+        "ratings_trend": [],
+        "ratings_changes": [],
+        "insider_net_shares_6m": None,
+        "insider_buy_trans_6m": None,
+        "insider_sell_trans_6m": None,
+        "insider_transactions": [],
+        "insiders_pct_held": None,
+        "institutions_pct_held": None,
+        "top_institutional_holders": [],
+        "short_percent_of_float": None,
+        "short_ratio": None,
+        "next_earnings_date": None,
+        "days_to_earnings": None,
+    }
+
 
 def _safe_float(value: object) -> float | None:
     """Best-effort conversion to a plain finite float, else None."""
@@ -72,6 +128,22 @@ def _safe_float(value: object) -> float | None:
     if math.isnan(result) or math.isinf(result):
         return None
     return result
+
+
+def _safe_int(value: object) -> int | None:
+    """Best-effort conversion to a plain int (via :func:`_safe_float`), else None."""
+    result = _safe_float(value)
+    return int(result) if result is not None else None
+
+
+def _safe_str(value: object) -> str | None:
+    """Trimmed string, or None for None / pandas NaN / empty / non-scalar."""
+    if value is None:
+        return None
+    if isinstance(value, float) and math.isnan(value):
+        return None
+    text = str(value).strip()
+    return text or None
 
 
 def _to_naive_utc(ts: object) -> datetime:
@@ -463,6 +535,285 @@ class MarketDataService:
             "high_52w": float(window_52w.max()) if not window_52w.empty else None,
             "low_52w": float(window_52w.min()) if not window_52w.empty else None,
             "avg_volume": avg_volume,
+        }
+
+    # ------------------------------------------------------------------
+    # Market sentiment & positioning (blueprint addendum)
+    # ------------------------------------------------------------------
+
+    def get_sentiment_snapshot(self, ticker: str) -> dict:
+        """Analyst / insider / institutional / short-interest snapshot for a ticker.
+
+        ALWAYS returns every key of :func:`_empty_sentiment` (None / empty list on
+        any failure) and never raises. Each yfinance sub-read (info,
+        recommendations, upgrades/downgrades, insider transactions & purchases,
+        institutional holders, calendar) is wrapped in its OWN try/except so one
+        missing dataset never blanks the others. Behind a 60-minute in-memory
+        cache keyed by ticker; a fully-empty/failed snapshot is NOT cached, so a
+        transient error self-heals on the next call.
+        """
+        result = _empty_sentiment()
+        normalized = (ticker or "").strip().upper()
+        if not normalized:
+            return result
+
+        now = datetime.utcnow()
+        cached = _sentiment_cache.get(normalized)
+        if cached is not None and (now - cached[1]) < _SENTIMENT_CACHE_TTL:
+            return cached[0]
+
+        try:
+            yf_ticker = yf.Ticker(normalized)
+        except Exception:
+            return result  # construction failed; do not cache (self-heals)
+
+        # --- analyst consensus, targets, ownership %, short interest (info) --- #
+        try:
+            info = yf_ticker.info or {}
+            if isinstance(info, dict):
+                result["recommendation_mean"] = _safe_float(info.get("recommendationMean"))
+                result["recommendation_key"] = _safe_str(info.get("recommendationKey"))
+                result["analyst_count"] = _safe_float(info.get("numberOfAnalystOpinions"))
+                result["target_mean"] = _safe_float(info.get("targetMeanPrice"))
+                result["target_high"] = _safe_float(info.get("targetHighPrice"))
+                result["target_low"] = _safe_float(info.get("targetLowPrice"))
+                result["insiders_pct_held"] = _safe_float(info.get("heldPercentInsiders"))
+                result["institutions_pct_held"] = _safe_float(
+                    info.get("heldPercentInstitutions")
+                )
+                result["short_percent_of_float"] = _safe_float(info.get("shortPercentOfFloat"))
+                result["short_ratio"] = _safe_float(info.get("shortRatio"))
+        except Exception:
+            pass
+
+        # --- ratings trend (month-over-month strongBuy/buy/hold/sell mix) --- #
+        try:
+            recs = yf_ticker.recommendations
+            if isinstance(recs, pd.DataFrame) and not recs.empty:
+                trend: list[dict] = []
+                for idx, row in recs.head(4).iterrows():
+                    period = _safe_str(row.get("period"))
+                    trend.append(
+                        {
+                            "period": period if period is not None else _safe_str(idx),
+                            "strong_buy": _safe_int(row.get("strongBuy")),
+                            "buy": _safe_int(row.get("buy")),
+                            "hold": _safe_int(row.get("hold")),
+                            "sell": _safe_int(row.get("sell")),
+                            "strong_sell": _safe_int(row.get("strongSell")),
+                        }
+                    )
+                result["ratings_trend"] = trend
+        except Exception:
+            pass
+
+        # --- recent rating changes (upgrades / downgrades, last 90 days) --- #
+        try:
+            changes_df = yf_ticker.upgrades_downgrades
+            if isinstance(changes_df, pd.DataFrame) and not changes_df.empty:
+                cutoff = datetime.utcnow() - timedelta(days=90)
+                ordered = changes_df.sort_index(ascending=False)  # newest first
+                changes: list[dict] = []
+                for idx, row in ordered.iterrows():
+                    try:
+                        when = _to_naive_utc(idx)
+                    except Exception:
+                        continue
+                    if when < cutoff:
+                        continue
+                    changes.append(
+                        {
+                            "date": when.strftime("%Y-%m-%d"),
+                            "firm": _safe_str(row.get("Firm")),
+                            "to_grade": _safe_str(row.get("ToGrade")),
+                            "from_grade": _safe_str(row.get("FromGrade")),
+                            "action": _safe_str(row.get("Action")),
+                        }
+                    )
+                    if len(changes) >= 8:
+                        break
+                result["ratings_changes"] = changes
+        except Exception:
+            pass
+
+        # --- insider purchases summary (net shares + buy/sell trans, 6m) --- #
+        try:
+            purchases = yf_ticker.insider_purchases
+            if isinstance(purchases, pd.DataFrame) and not purchases.empty:
+                label_col = purchases.columns[0]
+                for _, row in purchases.iterrows():
+                    label = _safe_str(row.get(label_col)) or ""
+                    if label == "Purchases":
+                        result["insider_buy_trans_6m"] = _safe_int(row.get("Trans"))
+                    elif label == "Sales":
+                        result["insider_sell_trans_6m"] = _safe_int(row.get("Trans"))
+                    elif label.startswith("Net Shares Purchased"):
+                        result["insider_net_shares_6m"] = _safe_float(row.get("Shares"))
+        except Exception:
+            pass
+
+        # --- individual insider transactions (newest first, max 8) --- #
+        try:
+            txns_df = yf_ticker.insider_transactions
+            if isinstance(txns_df, pd.DataFrame) and not txns_df.empty:
+                ordered = (
+                    txns_df.sort_values("Start Date", ascending=False)
+                    if "Start Date" in txns_df.columns
+                    else txns_df
+                )
+                txns: list[dict] = []
+                for _, row in ordered.head(8).iterrows():
+                    try:
+                        when = _to_naive_utc(row.get("Start Date")).strftime("%Y-%m-%d")
+                    except Exception:
+                        when = None
+                    txns.append(
+                        {
+                            "date": when,
+                            "insider": _safe_str(row.get("Insider")),
+                            "position": _safe_str(row.get("Position")),
+                            "text": _safe_str(row.get("Text")),
+                            "shares": _safe_float(row.get("Shares")),
+                            "value": _safe_float(row.get("Value")),
+                        }
+                    )
+                result["insider_transactions"] = txns
+        except Exception:
+            pass
+
+        # --- top institutional holders (max 5) --- #
+        try:
+            holders_df = yf_ticker.institutional_holders
+            if isinstance(holders_df, pd.DataFrame) and not holders_df.empty:
+                holders: list[dict] = []
+                for _, row in holders_df.head(5).iterrows():
+                    holders.append(
+                        {
+                            "holder": _safe_str(row.get("Holder")),
+                            "pct_held": _safe_float(row.get("pctHeld")),
+                            "pct_change": _safe_float(row.get("pctChange")),
+                        }
+                    )
+                result["top_institutional_holders"] = holders
+        except Exception:
+            pass
+
+        # --- next earnings date / days to earnings (calendar) --- #
+        try:
+            calendar = yf_ticker.calendar
+            earnings_date: object = None
+            if isinstance(calendar, dict):
+                raw = calendar.get("Earnings Date")
+                if isinstance(raw, (list, tuple)) and raw:
+                    earnings_date = raw[0]
+                elif raw is not None:
+                    earnings_date = raw
+            elif isinstance(calendar, pd.DataFrame) and not calendar.empty:
+                if "Earnings Date" in calendar.index:
+                    earnings_date = calendar.loc["Earnings Date"].iloc[0]
+            if earnings_date is not None:
+                when = _to_naive_utc(earnings_date)
+                result["next_earnings_date"] = when.strftime("%Y-%m-%d")
+                days = (when.date() - datetime.utcnow().date()).days
+                if days >= 0:
+                    result["days_to_earnings"] = days
+        except Exception:
+            pass
+
+        # Cache only a snapshot that actually carries data, so a transient
+        # all-empty failure self-heals on the next call.
+        if result != _empty_sentiment():
+            _sentiment_cache[normalized] = (result, now)
+        return result
+
+    def benchmark_for(self, ticker: str) -> str:
+        """Return the benchmark index ticker for ``ticker`` (longest suffix wins).
+
+        Falls back to the S&P 500 (``^GSPC``) when no exchange suffix matches.
+        """
+        normalized = (ticker or "").strip().upper()
+        best_suffix: str | None = None
+        for suffix in _BENCHMARK_SUFFIX_MAP:
+            if normalized.endswith(suffix) and (
+                best_suffix is None or len(suffix) > len(best_suffix)
+            ):
+                best_suffix = suffix
+        return _BENCHMARK_SUFFIX_MAP[best_suffix] if best_suffix is not None else _DEFAULT_BENCHMARK
+
+    def _benchmark_changes(self, benchmark: str) -> tuple[float | None, float | None]:
+        """(30d, 90d) % change for a benchmark index, cached per-benchmark (6h TTL).
+
+        Uses the SAME trading-session-lookback arithmetic as :meth:`price_summary`
+        (``iloc[-1 - n]`` over the close series). A fully-failed fetch returns
+        ``(None, None)`` and is NOT cached, so a transient error self-heals.
+        """
+        now = datetime.utcnow()
+        cached = _benchmark_cache.get(benchmark)
+        if cached is not None and (now - cached[1]) < _BENCHMARK_CACHE_TTL:
+            return cached[0]
+
+        try:
+            history = yf.Ticker(benchmark).history(
+                period="6mo", interval="1d", auto_adjust=False, actions=False
+            )
+        except Exception:
+            return (None, None)  # do not cache (self-heals)
+
+        changes: tuple[float | None, float | None] = (None, None)
+        try:
+            if history is not None and not history.empty and "Close" in history.columns:
+                closes = history["Close"].dropna()
+                if not closes.empty:
+                    last_close = float(closes.iloc[-1])
+
+                    def _change_pct(n_periods: int) -> float | None:
+                        if len(closes) <= n_periods:
+                            return None
+                        past = float(closes.iloc[-1 - n_periods])
+                        if not past:
+                            return None
+                        return (last_close - past) / past * 100.0
+
+                    changes = (_change_pct(30), _change_pct(90))
+        except Exception:
+            changes = (None, None)
+
+        if changes != (None, None):
+            _benchmark_cache[benchmark] = (changes, now)
+        return changes
+
+    def get_relative_performance(
+        self,
+        ticker: str,
+        stock_change_30d_pct: float | None,
+        stock_change_90d_pct: float | None,
+    ) -> dict:
+        """Relative strength of a stock vs its exchange benchmark over 30/90 days.
+
+        ``relative_*`` is the percentage-point spread (stock minus benchmark),
+        computed only when both sides are non-None. Never raises.
+        """
+        benchmark = self.benchmark_for(ticker)
+        bench_30d, bench_90d = self._benchmark_changes(benchmark)
+
+        relative_30d = (
+            stock_change_30d_pct - bench_30d
+            if stock_change_30d_pct is not None and bench_30d is not None
+            else None
+        )
+        relative_90d = (
+            stock_change_90d_pct - bench_90d
+            if stock_change_90d_pct is not None and bench_90d is not None
+            else None
+        )
+        return {
+            "benchmark": benchmark,
+            "stock_change_30d_pct": stock_change_30d_pct,
+            "benchmark_change_30d_pct": bench_30d,
+            "relative_30d_pct": relative_30d,
+            "stock_change_90d_pct": stock_change_90d_pct,
+            "benchmark_change_90d_pct": bench_90d,
+            "relative_90d_pct": relative_90d,
         }
 
 

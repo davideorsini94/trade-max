@@ -2,7 +2,7 @@
 
 ``run_weekly_evaluation()`` scores every recommendation that is now at least
 seven days old against realized market outcomes, attributes accuracy to each of
-the six pipeline actors, aggregates portfolio-level metrics, and always persists
+the seven pipeline actors, aggregates portfolio-level metrics, and always persists
 an :class:`~app.models.Evaluation` row (even when there is nothing to score).
 It then hands off to the LLM-backed feedback loop
 (:mod:`app.evaluation.feedback`) to write per-agent lessons and an Italian
@@ -32,13 +32,14 @@ from app.models import Analysis, Evaluation, PriceHistory, Recommendation, Symbo
 
 logger = logging.getLogger(__name__)
 
-# The four analysts plus the two decision actors. Order is stable so the
+# The five analysts plus the two decision actors. Order is stable so the
 # per-agent JSON always lists every agent, even with zero samples.
 ANALYST_AGENTS: tuple[str, ...] = (
     "technical",
     "fundamentals",
     "macro_news",
     "corporate_news",
+    "sentiment",
 )
 AGENT_NAMES: tuple[str, ...] = ANALYST_AGENTS + ("synthesizer", "validator")
 
@@ -203,7 +204,7 @@ async def _realized_return(db, rec: Recommendation, symbols_cache: dict[int, Sym
 
 
 def _attribute_per_agent(db, items: list[_EvalItem]) -> dict:
-    """Build ``{agent: {accuracy, avg_signal_error, n_samples}}`` for all 6 agents."""
+    """Build ``{agent: {accuracy, avg_signal_error, n_samples}}`` for all 7 agents."""
     samples: dict[str, list[tuple[bool, float, float | None]]] = {
         name: [] for name in AGENT_NAMES
     }
@@ -224,7 +225,7 @@ def _attribute_per_agent(db, items: list[_EvalItem]) -> dict:
         ret = item.ret
         by_agent = analyses_by_run.get(rec.run_id, {})
 
-        # --- four analysts: directional accuracy + signal error ---
+        # --- analysts: directional accuracy + signal error ---
         for agent in ANALYST_AGENTS:
             analysis = by_agent.get(agent)
             if analysis is None or analysis.status != "OK" or analysis.signal is None:
@@ -455,3 +456,44 @@ def get_agent_trends(db, last_n: int = 8) -> dict[str, list[float]]:
             if accuracy is not None:
                 trends.setdefault(name, []).append(float(accuracy))
     return trends
+
+
+def get_pending_status(db) -> dict:
+    """Snapshot of not-yet-evaluated recommendations, for the Performance page.
+
+    New recommendations only become scoreable once they are at least
+    ``EVALUATION_WINDOW_DAYS`` old (the evaluator needs a realized 7-day return).
+    Right after the app is set up — or after adding a new agent/symbol — this
+    naturally means "0 valutati" for a while, which reads as broken to a
+    non-technical user. This lets the UI say instead: "N consigli in attesa, M
+    già maturi, il prossimo lotto sarà valutabile il ...".
+
+    Returns ``{"pending_count", "ready_count", "next_evaluable_at"}``;
+    ``next_evaluable_at`` is ``None`` when there is nothing pending.
+    """
+    now = datetime.utcnow()
+    cutoff = now - timedelta(days=EVALUATION_WINDOW_DAYS)
+
+    rows = (
+        db.execute(
+            select(Recommendation.created_at)
+            .where(Recommendation.evaluated.is_(False))
+            .order_by(Recommendation.created_at.asc())
+        )
+        .scalars()
+        .all()
+    )
+
+    ready_count = sum(1 for created_at in rows if created_at <= cutoff)
+    pending_count = len(rows) - ready_count
+    next_evaluable_at = (
+        min(created_at for created_at in rows if created_at > cutoff) + timedelta(days=EVALUATION_WINDOW_DAYS)
+        if pending_count > 0
+        else None
+    )
+
+    return {
+        "pending_count": pending_count,
+        "ready_count": ready_count,
+        "next_evaluable_at": next_evaluable_at,
+    }
