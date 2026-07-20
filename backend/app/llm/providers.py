@@ -302,6 +302,15 @@ class OllamaProvider(BaseProvider):
             ],
             "stream": False,
             "format": "json",
+            # Hybrid "thinking" models (e.g. qwen3.5) otherwise spend the whole
+            # num_predict budget on a hidden reasoning phase and never emit the
+            # actual JSON answer (observed: 900/900 tokens consumed by
+            # "thinking", empty "content", done_reason "length"). This pipeline
+            # is single-shot JSON completion with a fixed token budget per
+            # call, so the reasoning phase is pure waste here. Ignored
+            # harmlessly by models that do not support it (verified against
+            # qwen2.5:7b/14b and gemma4:26b).
+            "think": False,
             "options": {"temperature": temperature, "num_predict": max_tokens},
         }
         data = await self._post(f"{self._base()}/api/chat", json=payload)

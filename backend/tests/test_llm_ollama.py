@@ -120,6 +120,9 @@ async def test_ollama_provider_payload_shape_and_usage(
         {"role": "user", "content": "USER"},
     ]
     assert payload["options"] == {"temperature": 0.3, "num_predict": 512}
+    # Hybrid "thinking" models must not burn the token budget on hidden
+    # reasoning in this single-shot JSON pipeline (harmless no-op otherwise).
+    assert payload["think"] is False
     # Usage is parsed from prompt_eval_count / eval_count.
     assert provider.last_usage == (123, 45)
 
