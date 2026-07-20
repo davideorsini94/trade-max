@@ -16,3 +16,6 @@ node_modules/
 frontend/dist/
 /data/
 /.claude/
+
+# macOS
+.DS_Store
