@@ -317,7 +317,7 @@ export default function LlmModelsCard({ refreshToken }: LlmModelsCardProps = {})
         <div>
           <h4 className="text-sm font-semibold text-slate-200">Modello predefinito</h4>
           <p className="mt-0.5 text-xs text-slate-500">
-            Usato da tutti gli attori che non hanno un modello dedicato qui sotto.
+            Usato da tutti gli agenti che non hanno un modello dedicato qui sotto.
           </p>
           <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div>
@@ -360,11 +360,11 @@ export default function LlmModelsCard({ refreshToken }: LlmModelsCardProps = {})
           </div>
         </div>
 
-        {/* Per-actor models */}
+        {/* Per-agent models */}
         <div>
-          <h4 className="text-sm font-semibold text-slate-200">Modello per attore</h4>
+          <h4 className="text-sm font-semibold text-slate-200">Modello per agente</h4>
           <p className="mt-0.5 text-xs text-slate-500">
-            Scegli un modello dedicato a un singolo attore, oppure lascia «Predefinito» per usare quello sopra.
+            Scegli un modello dedicato a un singolo agente, oppure lascia «Predefinito» per usare quello sopra.
           </p>
           <div className="mt-3 space-y-4">
             {AGENT_ORDER.map((agent) => {

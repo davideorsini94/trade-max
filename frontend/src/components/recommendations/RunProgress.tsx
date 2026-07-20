@@ -115,7 +115,7 @@ export default function RunProgress({ run }: RunProgressProps) {
             {HEADER_TEXT[run.status]}
             <InfoTip
               text={gloss("policy_engine")}
-              ariaLabel="Come funziona l'analisi a più attori"
+              ariaLabel="Come funziona l'analisi a più agenti"
             />
           </h3>
           <p className="mt-0.5 text-xs text-slate-400">
@@ -139,7 +139,7 @@ export default function RunProgress({ run }: RunProgressProps) {
           />
         </div>
         <p className="mt-1.5 text-xs text-slate-400">
-          {completed} di {total} attori completati
+          {completed} di {total} agenti completati
         </p>
       </div>
 
@@ -149,7 +149,7 @@ export default function RunProgress({ run }: RunProgressProps) {
           const analysis = byAgent.get(name);
           const failTitle =
             state === "failed"
-              ? analysis?.summary_it || "Analisi non riuscita per questo attore."
+              ? analysis?.summary_it || "Analisi non riuscita per questo agente."
               : undefined;
           return (
             <li key={name} className="flex items-center gap-2 text-sm">

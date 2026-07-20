@@ -279,7 +279,7 @@ export const GLOSSARY: Record<string, GlossEntry> = {
       "Quanto rischio sei disposto ad accettare. Un profilo più prudente riduce le dimensioni delle posizioni e alza le soglie di sicurezza; uno più dinamico fa il contrario.",
   },
 
-  // --- Attori dell'analisi ---
+  // --- Agenti dell'analisi ---
   agent_technical: {
     term: "Analista Tecnico",
     short:
@@ -303,7 +303,7 @@ export const GLOSSARY: Record<string, GlossEntry> = {
   synthesizer: {
     term: "Sintetizzatore",
     short:
-      "L'attore che mette insieme le opinioni di tutti gli analisti e le trasforma in un'unica raccomandazione con azione, importo e livelli di prezzo.",
+      "L'agente che mette insieme le opinioni di tutti gli analisti e le trasforma in un'unica raccomandazione con azione, importo e livelli di prezzo.",
   },
   validator: {
     term: "Validatore rischio",
@@ -313,7 +313,7 @@ export const GLOSSARY: Record<string, GlossEntry> = {
   llm_model: {
     term: "Modello (LLM)",
     short:
-      "Il 'cervello' di intelligenza artificiale usato dagli attori per analizzare i dati. Modelli diversi hanno costi e qualità diverse; puoi sceglierne uno economico per gli analisti e uno più potente per il sintetizzatore.",
+      "Il 'cervello' di intelligenza artificiale usato dagli agenti per analizzare i dati. Modelli diversi hanno costi e qualità diverse; puoi sceglierne uno economico per gli analisti e uno più potente per il sintetizzatore.",
   },
   llm_provider: {
     term: "Provider LLM",
@@ -557,7 +557,7 @@ export const GLOSSARY_SECTIONS: ReadonlyArray<{ title: string; keys: readonly st
     ],
   },
   {
-    title: "Attori dell'analisi",
+    title: "Agenti dell'analisi",
     keys: [
       "agent_technical",
       "agent_fundamentals",
