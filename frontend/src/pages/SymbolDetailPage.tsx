@@ -285,22 +285,35 @@ export default function SymbolDetailPage() {
       <Card
         title="Andamento prezzo e indicatori"
         actions={
-          <div className="flex items-center gap-1" role="group" aria-label="Periodo del grafico">
-            {CHART_RANGES.map((range) => (
-              <button
-                key={range.days}
-                type="button"
-                onClick={() => setChartDays(range.days)}
-                aria-pressed={chartDays === range.days}
-                className={`rounded-md px-2.5 py-1 text-xs font-semibold transition ${
-                  chartDays === range.days
-                    ? "bg-brand-600 text-white"
-                    : "text-slate-400 hover:bg-slate-800 hover:text-slate-200"
-                }`}
-              >
-                {range.label}
-              </button>
-            ))}
+          <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1" role="group" aria-label="Periodo del grafico">
+              {CHART_RANGES.map((range) => (
+                <button
+                  key={range.days}
+                  type="button"
+                  onClick={() => setChartDays(range.days)}
+                  aria-pressed={chartDays === range.days}
+                  className={`rounded-md px-2.5 py-1 text-xs font-semibold transition ${
+                    chartDays === range.days
+                      ? "bg-brand-600 text-white"
+                      : "text-slate-400 hover:bg-slate-800 hover:text-slate-200"
+                  }`}
+                >
+                  {range.label}
+                </button>
+              ))}
+            </div>
+            <button
+              type="button"
+              onClick={() => pricesQuery.refetch()}
+              disabled={pricesQuery.loading}
+              title="Aggiorna il grafico"
+              aria-label="Aggiorna il grafico"
+              className="inline-flex items-center gap-1.5 rounded-md border border-slate-700 px-2.5 py-1 text-xs font-medium text-slate-300 transition hover:bg-slate-800 disabled:opacity-60"
+            >
+              {pricesQuery.loading ? <Spinner size="sm" /> : <span aria-hidden="true">↻</span>}
+              <span className="hidden sm:inline">Aggiorna</span>
+            </button>
           </div>
         }
       >
