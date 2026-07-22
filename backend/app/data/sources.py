@@ -51,6 +51,21 @@ MACRO_SOURCES: Final[dict[str, MacroSource]] = {
         "url": "https://www.ilsole24ore.com/rss/finanza--mercati.xml",
         "lang": "it",
     },
+    "boe_press": {
+        "name": "Bank of England",
+        "url": "https://www.bankofengland.co.uk/rss/news",
+        "lang": "en",
+    },
+    "bls_latest": {
+        "name": "US Bureau of Labor Statistics",
+        "url": "https://www.bls.gov/feed/bls_latest.rss",
+        "lang": "en",
+    },
+    "esma_press": {
+        "name": "ESMA",
+        "url": "https://www.esma.europa.eu/rss.xml",
+        "lang": "en",
+    },
 }
 
 # Per-ticker feed URL templates. ``{ticker}`` is substituted with the symbol's

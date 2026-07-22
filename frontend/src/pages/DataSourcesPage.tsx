@@ -42,6 +42,9 @@ const SECTIONS: SourceSection[] = [
     items: [
       { name: "Federal Reserve", detail: "comunicati ufficiali della banca centrale statunitense" },
       { name: "BCE", detail: "comunicati della Banca Centrale Europea" },
+      { name: "Bank of England", detail: "comunicati della banca centrale britannica" },
+      { name: "ESMA", detail: "Autorità europea degli strumenti finanziari e dei mercati (regolatore UE)" },
+      { name: "US Bureau of Labor Statistics", detail: "dati ufficiali su inflazione, occupazione e indicatori economici USA" },
       { name: "CNBC Top News" },
       { name: "CNBC Economy" },
       { name: "MarketWatch" },
