@@ -491,6 +491,15 @@ def _gather_market_data(symbol_id: int, ticker: str) -> dict:
     latest = indicators_full.get("latest", {}) if isinstance(indicators_full, dict) else {}
     price_summary = market.price_summary(df_daily)
     fundamentals = market.get_fundamentals(ticker)
+    # Analyst forward estimates + revisions (own fetch, cached 6h). Attached under
+    # the fundamentals payload as an optional "estimates" block; kept None when the
+    # snapshot is fully empty (common for non-US tickers) so the fundamentals agent
+    # simply sees no signal there. This must NOT affect the deterministic
+    # skip logic, which looks only at the core numeric fields.
+    estimates = market.get_analyst_estimates(ticker)
+    fundamentals["estimates"] = (
+        estimates if any(value is not None for value in estimates.values()) else None
+    )
     # Same synchronous/blocking pattern as the fundamentals/market calls above
     # (this whole function already runs inside asyncio.to_thread at its call site).
     sentiment = market.get_sentiment_snapshot(ticker)

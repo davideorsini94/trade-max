@@ -77,6 +77,20 @@ _sentiment_cache: dict[str, tuple[dict, datetime]] = {}
 _BENCHMARK_CACHE_TTL = timedelta(hours=6)
 _benchmark_cache: dict[str, tuple[tuple[float | None, float | None], datetime]] = {}
 
+# In-memory analyst-estimates cache keyed by ticker. Same convention as the
+# sentiment/benchmark caches: analyst forward estimates barely move intraday, so
+# a 6-hour snapshot is reused (and one internal ``earningsTrend`` fetch serves
+# it). A fully-empty snapshot is NOT cached, so a transient error self-heals.
+_ESTIMATES_CACHE_TTL = timedelta(hours=6)
+_estimates_cache: dict[str, tuple[dict, datetime]] = {}
+
+# The annual DataFrame rows read from the earningsTrend module: current fiscal
+# year ("0y") and next fiscal year ("+1y"). The quarterly rows ("0q"/"+1q") are
+# deliberately skipped — they roughly double the payload token cost with little
+# added value for a 30-day-horizon desk.
+_ESTIMATE_PERIOD_CURRENT_YEAR = "0y"
+_ESTIMATE_PERIOD_NEXT_YEAR = "+1y"
+
 # Exchange-suffix -> benchmark index (longest matching suffix wins). Index
 # tickers are Yahoo Finance symbols; the default fallback is the S&P 500.
 _BENCHMARK_SUFFIX_MAP: dict[str, str] = {
@@ -126,6 +140,126 @@ def _empty_sentiment() -> dict:
         "next_earnings_date": None,
         "days_to_earnings": None,
     }
+
+
+def _empty_estimates() -> dict:
+    """A fresh, fully-empty analyst-estimates snapshot (every top-level key present).
+
+    ``eps_current_year`` / ``eps_next_year`` are ``None`` (not a dict of Nones)
+    when their annual row is absent — see :meth:`MarketDataService.get_analyst_estimates`.
+    """
+    return {
+        "eps_current_year": None,
+        "eps_next_year": None,
+        "revenue_growth_current_year_pct": None,
+        "revenue_growth_next_year_pct": None,
+        "eps_revisions_up_30d": None,
+        "eps_revisions_down_30d": None,
+    }
+
+
+def _read_estimate_df(yf_ticker: object, prop: str) -> pd.DataFrame | None:
+    """Read one earningsTrend DataFrame property, or None on failure/empty.
+
+    The four properties (``eps_trend``, ``earnings_estimate``,
+    ``revenue_estimate``, ``eps_revisions``) share a single internal HTTP fetch
+    inside yfinance, but each is read in its own try/except so one failing
+    property never blanks the others.
+    """
+    try:
+        df = getattr(yf_ticker, prop)
+    except Exception:
+        return None
+    return df if isinstance(df, pd.DataFrame) and not df.empty else None
+
+
+def _estimate_row(df: pd.DataFrame | None, period: str) -> pd.Series | None:
+    """Return the ``period``-indexed row (e.g. ``"0y"``) of ``df`` as a Series, else None."""
+    if not isinstance(df, pd.DataFrame) or df.empty:
+        return None
+    try:
+        if period not in df.index:
+            return None
+        row = df.loc[period]
+    except Exception:
+        return None
+    if isinstance(row, pd.DataFrame):  # duplicate index -> take the first match
+        row = row.iloc[0] if not row.empty else None
+    return row if isinstance(row, pd.Series) else None
+
+
+def _eps_revision_pct(trend_row: pd.Series | None, past_col: str) -> float | None:
+    """Percentage change of the consensus EPS vs ``past_col`` (e.g. ``"30daysAgo"``).
+
+    ``(current - past) / abs(past) * 100``. Returns None when either value is
+    missing or the denominator is 0 (guards against ZeroDivisionError).
+    """
+    if trend_row is None:
+        return None
+    current = _safe_float(trend_row.get("current"))
+    past = _safe_float(trend_row.get(past_col))
+    if current is None or past is None or past == 0:
+        return None
+    return (current - past) / abs(past) * 100.0
+
+
+def _build_eps_year(
+    earnings_df: pd.DataFrame | None,
+    eps_trend_df: pd.DataFrame | None,
+    period: str,
+) -> dict | None:
+    """Build one EPS block (avg/n_analysts/growth + 7/30/90-day revisions).
+
+    Combines ``earnings_estimate`` (avg, numberOfAnalysts, growth) with
+    ``eps_trend`` (consensus revisions). Returns None when the annual row is
+    absent from BOTH DataFrames; otherwise every sub-field is present (None when
+    its own source is missing).
+    """
+    est_row = _estimate_row(earnings_df, period)
+    trend_row = _estimate_row(eps_trend_df, period)
+    if est_row is None and trend_row is None:
+        return None
+    avg = _safe_float(est_row.get("avg")) if est_row is not None else None
+    n_analysts = _safe_int(est_row.get("numberOfAnalysts")) if est_row is not None else None
+    growth = _safe_float(est_row.get("growth")) if est_row is not None else None
+    return {
+        "avg": avg,
+        "n_analysts": n_analysts,
+        "growth_pct": growth * 100.0 if growth is not None else None,
+        "revision_7d_pct": _eps_revision_pct(trend_row, "7daysAgo"),
+        "revision_30d_pct": _eps_revision_pct(trend_row, "30daysAgo"),
+        "revision_90d_pct": _eps_revision_pct(trend_row, "90daysAgo"),
+    }
+
+
+def _revenue_growth_pct(revenue_df: pd.DataFrame | None, period: str) -> float | None:
+    """Expected revenue growth (%) for ``period`` from ``revenue_estimate.growth``."""
+    row = _estimate_row(revenue_df, period)
+    if row is None:
+        return None
+    growth = _safe_float(row.get("growth"))
+    return growth * 100.0 if growth is not None else None
+
+
+def _sum_eps_revisions(revisions_df: pd.DataFrame | None, column: str) -> int | None:
+    """Sum a revisions column (e.g. ``"upLast30days"``) across all present rows.
+
+    Returns None when the column is absent or carries no numeric value. NOTE the
+    incoherent yfinance casing: ``upLast7days``/``upLast30days``/``downLast30days``
+    but ``downLast7Days`` (capital D) — only the 30-day windows are summed here.
+    """
+    if not isinstance(revisions_df, pd.DataFrame) or revisions_df.empty:
+        return None
+    if column not in revisions_df.columns:
+        return None
+    total = 0
+    found = False
+    for value in revisions_df[column].tolist():
+        as_int = _safe_int(value)
+        if as_int is not None:
+            total += as_int
+            found = True
+    return total if found else None
 
 
 def _safe_float(value: object) -> float | None:
@@ -735,6 +869,63 @@ class MarketDataService:
         # all-empty failure self-heals on the next call.
         if result != _empty_sentiment():
             _sentiment_cache[normalized] = (result, now)
+        return result
+
+    def get_analyst_estimates(self, ticker: str) -> dict:
+        """Analyst forward EPS/revenue estimates and their recent revisions.
+
+        Reads the four yfinance earningsTrend DataFrames (``eps_trend``,
+        ``earnings_estimate``, ``revenue_estimate``, ``eps_revisions``), which
+        share ONE internal HTTP fetch. Kept SEPARATE from :meth:`get_fundamentals`
+        on purpose: that method also backs the symbol-overview UI page, which
+        must not pay for this extra data on every open.
+
+        Only the annual rows (current / next fiscal year) are read; the quarterly
+        rows are skipped to bound the prompt token cost. ALWAYS returns every key
+        of :func:`_empty_estimates` (None on any failure) and never raises. Each
+        sub-read is wrapped in its own try/except so one missing DataFrame never
+        blanks the others. Behind a 6-hour in-memory cache keyed by ticker; a
+        fully-empty snapshot is NOT cached, so a transient error self-heals.
+        """
+        result = _empty_estimates()
+        normalized = (ticker or "").strip().upper()
+        if not normalized:
+            return result
+
+        now = datetime.utcnow()
+        cached = _estimates_cache.get(normalized)
+        if cached is not None and (now - cached[1]) < _ESTIMATES_CACHE_TTL:
+            return cached[0]
+
+        try:
+            yf_ticker = yf.Ticker(normalized)
+        except Exception:
+            return result  # construction failed; do not cache (self-heals)
+
+        eps_trend_df = _read_estimate_df(yf_ticker, "eps_trend")
+        earnings_df = _read_estimate_df(yf_ticker, "earnings_estimate")
+        revenue_df = _read_estimate_df(yf_ticker, "revenue_estimate")
+        revisions_df = _read_estimate_df(yf_ticker, "eps_revisions")
+
+        result["eps_current_year"] = _build_eps_year(
+            earnings_df, eps_trend_df, _ESTIMATE_PERIOD_CURRENT_YEAR
+        )
+        result["eps_next_year"] = _build_eps_year(
+            earnings_df, eps_trend_df, _ESTIMATE_PERIOD_NEXT_YEAR
+        )
+        result["revenue_growth_current_year_pct"] = _revenue_growth_pct(
+            revenue_df, _ESTIMATE_PERIOD_CURRENT_YEAR
+        )
+        result["revenue_growth_next_year_pct"] = _revenue_growth_pct(
+            revenue_df, _ESTIMATE_PERIOD_NEXT_YEAR
+        )
+        result["eps_revisions_up_30d"] = _sum_eps_revisions(revisions_df, "upLast30days")
+        result["eps_revisions_down_30d"] = _sum_eps_revisions(revisions_df, "downLast30days")
+
+        # Cache only a snapshot that actually carries data (at least one non-None
+        # top-level value), so a transient all-empty failure self-heals.
+        if any(value is not None for value in result.values()):
+            _estimates_cache[normalized] = (result, now)
         return result
 
     def benchmark_for(self, ticker: str) -> str:

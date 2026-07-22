@@ -28,7 +28,10 @@ const SECTIONS: SourceSection[] = [
     title: "Dati fondamentali e scheda del titolo",
     intro:
       "P/E, P/E atteso, EPS, capitalizzazione, dividendo, beta, settore, industria, target degli analisti: letti dalla scheda informativa di Yahoo Finance per ogni titolo.",
-    items: [{ name: "Yahoo Finance (yfinance) — dati societari" }],
+    items: [
+      { name: "Yahoo Finance (yfinance) — dati societari" },
+      { name: "Yahoo Finance (yfinance) — stime e revisioni degli analisti", detail: "utile atteso (EPS) e crescita dei ricavi stimati per l'anno fiscale corrente e il prossimo, con la variazione del consenso negli ultimi 7/30/90 giorni e quanti analisti hanno alzato o tagliato le stime: revisioni in salita rafforzano il quadro, revisioni in discesa sono un campanello d'allarme anche quando il P/E sembra a buon mercato" },
+    ],
   },
   {
     title: "Analista Sentiment (consenso, insider, istituzionali)",
