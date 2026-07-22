@@ -6,6 +6,7 @@ import SymbolDetailPage from "./pages/SymbolDetailPage";
 import PerformancePage from "./pages/PerformancePage";
 import SettingsPage from "./pages/SettingsPage";
 import GlossaryPage from "./pages/GlossaryPage";
+import DataSourcesPage from "./pages/DataSourcesPage";
 
 export default function App() {
   return (
@@ -17,6 +18,7 @@ export default function App() {
         <Route path="/performance" element={<PerformancePage />} />
         <Route path="/settings" element={<SettingsPage />} />
         <Route path="/glossario" element={<GlossaryPage />} />
+        <Route path="/fonti-dati" element={<DataSourcesPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>
     </Routes>

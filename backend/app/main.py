@@ -150,4 +150,14 @@ if FRONTEND_DIST.is_dir():
             and candidate.is_relative_to(FRONTEND_DIST.resolve())
         ):
             return FileResponse(candidate)
-        return FileResponse(FRONTEND_DIST / "index.html")
+        # index.html references the build's content-hashed JS/CSS filenames
+        # (e.g. index-<hash>.js), which change on every deploy. Without an
+        # explicit Cache-Control, browsers apply heuristic caching to this
+        # response (it has Last-Modified/ETag but no directive), so a tab left
+        # open across a rebuild keeps running the OLD bundle indefinitely —
+        # new features/fixes silently don't appear until a manual hard reload.
+        # "no-cache" forces revalidation on every load (cheap: a 304 when
+        # unchanged) instead of disabling caching outright.
+        return FileResponse(
+            FRONTEND_DIST / "index.html", headers={"Cache-Control": "no-cache"}
+        )

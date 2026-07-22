@@ -10,6 +10,7 @@ const NAV_ITEMS = [
   { to: "/performance", label: "Performance", end: false },
   { to: "/settings", label: "Impostazioni", end: false },
   { to: "/glossario", label: "Glossario", end: false },
+  { to: "/fonti-dati", label: "Fonti dati", end: false },
 ];
 
 function navLinkClass(isActive: boolean): string {
