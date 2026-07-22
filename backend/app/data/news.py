@@ -50,6 +50,7 @@ _MAX_TITLE_CHARS = 300
 _MAX_URL_CHARS = 600
 _FRESHNESS_HOURS = 72
 _MAX_ITEMS_RETURNED = 15
+_MAX_ITEMS_PER_SOURCE = 3
 _PRUNE_AFTER_DAYS = 7
 
 # Human-readable display names for the per-ticker CORPORATE_SOURCES templates
@@ -249,7 +250,12 @@ class NewsService:
                         title=entry["title"],
                         url=url,
                         summary=entry["summary"],
-                        published_at=entry["published_at"],
+                        # Some feeds (e.g. ESMA) omit a pubDate entirely; without a
+                        # fallback these rows get published_at=NULL and are excluded
+                        # forever by _latest_from_db's "isnot(None)" freshness filter.
+                        # First-seen time is a reasonable proxy given the 30-minute
+                        # refresh cadence.
+                        published_at=entry["published_at"] or datetime.utcnow(),
                         fetched_at=datetime.utcnow(),
                     )
                 )
@@ -283,7 +289,28 @@ class NewsService:
             if ticker is None
             else query.filter(NewsItem.ticker == ticker)
         )
-        rows = query.order_by(NewsItem.published_at.desc()).limit(_MAX_ITEMS_RETURNED).all()
+        rows = query.order_by(NewsItem.published_at.desc()).all()
+
+        # High-frequency commercial wires (CNBC, MarketWatch...) publish far more
+        # often than official/regulatory sources, so a plain "most recent N" would
+        # crowd the latter out of the prompt entirely. Cap each source's share of
+        # the window first for diversity, then backfill any spare slots with the
+        # next most recent items regardless of source so the total still reaches
+        # _MAX_ITEMS_RETURNED when few distinct sources are active.
+        selected: list[NewsItem] = []
+        overflow: list[NewsItem] = []
+        per_source_count: dict[str, int] = {}
+        for row in rows:
+            if per_source_count.get(row.source_key, 0) < _MAX_ITEMS_PER_SOURCE:
+                selected.append(row)
+                per_source_count[row.source_key] = per_source_count.get(row.source_key, 0) + 1
+            else:
+                overflow.append(row)
+        if len(selected) < _MAX_ITEMS_RETURNED:
+            selected.extend(overflow[: _MAX_ITEMS_RETURNED - len(selected)])
+        selected.sort(key=lambda row: row.published_at, reverse=True)
+        selected = selected[:_MAX_ITEMS_RETURNED]
+
         return [
             {
                 "source": self._display_name(row.source_key, category),
@@ -291,7 +318,7 @@ class NewsService:
                 "summary": row.summary,
                 "published_at": row.published_at,
             }
-            for row in rows
+            for row in selected
         ]
 
     @staticmethod

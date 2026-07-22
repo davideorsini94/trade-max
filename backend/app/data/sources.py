@@ -56,9 +56,14 @@ MACRO_SOURCES: Final[dict[str, MacroSource]] = {
         "url": "https://www.bankofengland.co.uk/rss/news",
         "lang": "en",
     },
-    "bls_latest": {
-        "name": "US Bureau of Labor Statistics",
-        "url": "https://www.bls.gov/feed/bls_latest.rss",
+    "bls_cpi": {
+        "name": "US BLS — Consumer Price Index",
+        "url": "https://www.bls.gov/feed/cpi.rss",
+        "lang": "en",
+    },
+    "bls_empsit": {
+        "name": "US BLS — Employment Situation",
+        "url": "https://www.bls.gov/feed/empsit.rss",
         "lang": "en",
     },
     "esma_press": {
