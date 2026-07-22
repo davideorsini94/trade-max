@@ -199,6 +199,92 @@ def test_get_relative_performance_degrades_when_history_raises(
     assert result["relative_90d_pct"] is None
     assert result["stock_change_30d_pct"] is None
     assert result["stock_change_90d_pct"] is None
+    # Retro-compatible: with no sector supplied, every sector-specific key is None.
+    assert result["sector"] is None
+    assert result["sector_etf"] is None
+    assert result["sector_change_30d_pct"] is None
+    assert result["sector_change_90d_pct"] is None
+    assert result["relative_sector_30d_pct"] is None
+    assert result["relative_sector_90d_pct"] is None
+
+
+# --------------------------------------------------------------------------- #
+# Sector relative strength (SPDR sector ETF proxy)
+# --------------------------------------------------------------------------- #
+
+
+def test_sector_etf_for_maps_names_aliases_and_unknown() -> None:
+    svc = market.market_data_service
+    assert svc.sector_etf_for("Technology") == "XLK"
+    assert svc.sector_etf_for("Consumer Discretionary") == "XLY"  # GICS alias
+    assert svc.sector_etf_for(" Technology ") == "XLK"  # trimmed before lookup
+    assert svc.sector_etf_for(None) is None
+    assert svc.sector_etf_for("Boh") is None  # unmapped sector
+
+
+def test_get_relative_performance_computes_sector_spread(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # _benchmark_changes is reused for both the main benchmark and the sector ETF;
+    # return distinct values per ticker so we can assert both spreads independently.
+    def _fake_benchmark_changes(
+        self: market.MarketDataService, benchmark: str
+    ) -> tuple[float | None, float | None]:
+        if benchmark == "XLK":  # Technology sector ETF
+            return (2.0, 5.0)
+        return (1.0, 3.0)  # main benchmark (^GSPC for AAPL)
+
+    monkeypatch.setattr(
+        market.MarketDataService, "_benchmark_changes", _fake_benchmark_changes
+    )
+
+    result = market.market_data_service.get_relative_performance(
+        "AAPL", 10.0, 12.0, sector="Technology"
+    )
+
+    # Sector proxy resolved and spreads computed as (stock - sector).
+    assert result["sector"] == "Technology"
+    assert result["sector_etf"] == "XLK"
+    assert result["sector_change_30d_pct"] == 2.0
+    assert result["sector_change_90d_pct"] == 5.0
+    assert result["relative_sector_30d_pct"] == pytest.approx(8.0)  # 10 - 2
+    assert result["relative_sector_90d_pct"] == pytest.approx(7.0)  # 12 - 5
+    # Main-benchmark spreads unaffected and still computed against ^GSPC.
+    assert result["benchmark"] == "^GSPC"
+    assert result["benchmark_change_30d_pct"] == 1.0
+    assert result["relative_30d_pct"] == pytest.approx(9.0)  # 10 - 1
+    assert result["relative_90d_pct"] == pytest.approx(9.0)  # 12 - 3
+
+
+def test_get_relative_performance_unmapped_sector_keeps_benchmark_fields(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _fake_benchmark_changes(
+        self: market.MarketDataService, benchmark: str
+    ) -> tuple[float | None, float | None]:
+        return (1.0, 3.0)
+
+    monkeypatch.setattr(
+        market.MarketDataService, "_benchmark_changes", _fake_benchmark_changes
+    )
+
+    result = market.market_data_service.get_relative_performance(
+        "AAPL", 10.0, 12.0, sector="Boh"
+    )
+
+    # Unmapped sector: only the "sector" echo survives; the rest stay None.
+    assert result["sector"] == "Boh"
+    assert result["sector_etf"] is None
+    assert result["sector_change_30d_pct"] is None
+    assert result["sector_change_90d_pct"] is None
+    assert result["relative_sector_30d_pct"] is None
+    assert result["relative_sector_90d_pct"] is None
+    # Benchmark fields remain intact.
+    assert result["benchmark"] == "^GSPC"
+    assert result["benchmark_change_30d_pct"] == 1.0
+    assert result["benchmark_change_90d_pct"] == 3.0
+    assert result["relative_30d_pct"] == pytest.approx(9.0)  # 10 - 1
+    assert result["relative_90d_pct"] == pytest.approx(9.0)  # 12 - 3
 
 
 # --------------------------------------------------------------------------- #

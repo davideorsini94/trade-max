@@ -498,6 +498,7 @@ def _gather_market_data(symbol_id: int, ticker: str) -> dict:
         ticker,
         price_summary.get("change_pct_30d"),
         price_summary.get("change_pct_90d"),
+        sector=fundamentals.get("sector"),
     )
     calendar = {
         "next_earnings_date": sentiment.get("next_earnings_date"),

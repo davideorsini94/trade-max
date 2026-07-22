@@ -91,6 +91,17 @@ _BENCHMARK_SUFFIX_MAP: dict[str, str] = {
 }
 _DEFAULT_BENCHMARK = "^GSPC"
 
+# Yahoo Finance sector name -> SPDR sector ETF (US-sector proxy).
+_SECTOR_ETF_MAP: dict[str, str] = {
+    "Technology": "XLK", "Financial Services": "XLF", "Energy": "XLE",
+    "Healthcare": "XLV", "Industrials": "XLI", "Consumer Cyclical": "XLY",
+    "Consumer Defensive": "XLP", "Utilities": "XLU", "Basic Materials": "XLB",
+    "Real Estate": "XLRE", "Communication Services": "XLC",
+    # GICS aliases (curated universe / other providers)
+    "Information Technology": "XLK", "Financials": "XLF", "Health Care": "XLV",
+    "Consumer Discretionary": "XLY", "Consumer Staples": "XLP", "Materials": "XLB",
+}
+
 
 def _empty_sentiment() -> dict:
     """A fresh, fully-empty sentiment snapshot (every key present, safe defaults)."""
@@ -740,6 +751,15 @@ class MarketDataService:
                 best_suffix = suffix
         return _BENCHMARK_SUFFIX_MAP[best_suffix] if best_suffix is not None else _DEFAULT_BENCHMARK
 
+    def sector_etf_for(self, sector: str | None) -> str | None:
+        """Return the SPDR sector ETF proxy for a sector name, or None if unmapped.
+
+        Accepts Yahoo Finance sector names and common GICS aliases (see
+        :data:`_SECTOR_ETF_MAP`); the input is trimmed before lookup. ``None``,
+        an empty/whitespace string, or any unrecognized sector yields ``None``.
+        """
+        return _SECTOR_ETF_MAP.get((sector or "").strip())
+
     def _benchmark_changes(self, benchmark: str) -> tuple[float | None, float | None]:
         """(30d, 90d) % change for a benchmark index, cached per-benchmark (6h TTL).
 
@@ -787,11 +807,18 @@ class MarketDataService:
         ticker: str,
         stock_change_30d_pct: float | None,
         stock_change_90d_pct: float | None,
+        sector: str | None = None,
     ) -> dict:
         """Relative strength of a stock vs its exchange benchmark over 30/90 days.
 
         ``relative_*`` is the percentage-point spread (stock minus benchmark),
-        computed only when both sides are non-None. Never raises.
+        computed only when both sides are non-None. When ``sector`` maps to an
+        SPDR sector ETF (see :meth:`sector_etf_for`), a second, sector-relative
+        spread is added using the SAME :meth:`_benchmark_changes` machinery (and
+        thus the same 6h cache), so one fetch of e.g. XLK serves every Technology
+        title. The sector-specific keys are always present but stay ``None`` when
+        the sector is unmapped/None (only the ``"sector"`` echo carries the raw
+        input). Never raises.
         """
         benchmark = self.benchmark_for(ticker)
         bench_30d, bench_90d = self._benchmark_changes(benchmark)
@@ -806,6 +833,23 @@ class MarketDataService:
             if stock_change_90d_pct is not None and bench_90d is not None
             else None
         )
+
+        sector_etf = self.sector_etf_for(sector)
+        sector_30d: float | None = None
+        sector_90d: float | None = None
+        if sector_etf is not None:
+            sector_30d, sector_90d = self._benchmark_changes(sector_etf)
+        relative_sector_30d = (
+            stock_change_30d_pct - sector_30d
+            if stock_change_30d_pct is not None and sector_30d is not None
+            else None
+        )
+        relative_sector_90d = (
+            stock_change_90d_pct - sector_90d
+            if stock_change_90d_pct is not None and sector_90d is not None
+            else None
+        )
+
         return {
             "benchmark": benchmark,
             "stock_change_30d_pct": stock_change_30d_pct,
@@ -814,6 +858,12 @@ class MarketDataService:
             "stock_change_90d_pct": stock_change_90d_pct,
             "benchmark_change_90d_pct": bench_90d,
             "relative_90d_pct": relative_90d,
+            "sector": sector,
+            "sector_etf": sector_etf,
+            "sector_change_30d_pct": sector_30d,
+            "sector_change_90d_pct": sector_90d,
+            "relative_sector_30d_pct": relative_sector_30d,
+            "relative_sector_90d_pct": relative_sector_90d,
         }
 
 

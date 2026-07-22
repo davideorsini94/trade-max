@@ -19,6 +19,7 @@ const SECTIONS: SourceSection[] = [
       "Quotazioni, grafico dell'andamento, apertura/chiusura, minimi e massimi, volumi: tutto arriva da Yahoo Finance tramite la libreria yfinance, gratuita e senza chiave API.",
     items: [
       { name: "Yahoo Finance (yfinance)", detail: "prezzi in tempo quasi reale (ritardo tipico ~15 minuti), storico giornaliero e orario" },
+      { name: "Indici di riferimento ed ETF settoriali SPDR", detail: "per la forza relativa l'andamento del titolo è confrontato con l'indice della sua borsa (es. S&P 500, FTSE MIB) e con l'ETF settoriale SPDR corrispondente al suo settore usato come proxy (es. XLK per la tecnologia, XLF per i finanziari), anch'essi da Yahoo Finance" },
     ],
     note:
       "I dati sono gratuiti e non garantiti: possono avere ritardi, piccole discrepanze o mancare del tutto per titoli meno seguiti.",

@@ -32,9 +32,12 @@ and high ATR mean lower conviction and larger risk.
 - Support / resistance: the 52-week high/low range and recent swing levels implied \
 by the close series.
 - Relative strength: relative_performance compares the stock's 30/90-day change to \
-its benchmark index (the relative_30d_pct / relative_90d_pct fields, expressed in \
-percentage points). Persistent UNDERperformance of the benchmark argues against \
-bullish signals, while OUTperformance supports them.
+its benchmark index (relative_30d_pct / relative_90d_pct) and, when sector_etf is \
+present, to its US sector ETF as a sector proxy (relative_sector_30d_pct / \
+relative_sector_90d_pct), all in percentage points. Persistent UNDERperformance of \
+both the benchmark and the sector is broad weakness and argues against bullish \
+signals; OUTperforming a lagging sector is stock-specific strength. Null sector \
+fields mean the sector was unmapped — ignore them, do not guess.
 
 Discipline:
 - Be conservative. When indicators conflict (e.g. bullish trend but overbought RSI, \
