@@ -364,6 +364,9 @@ class _FakeMarket:
     def get_sentiment_snapshot(self, *a: object, **k: object) -> dict:
         return market._empty_sentiment()
 
+    def get_market_regime(self, *a: object, **k: object) -> dict:
+        return market._empty_market_regime()
+
     def get_relative_performance(self, *a: object, **k: object) -> dict:
         return {}
 

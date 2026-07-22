@@ -91,6 +91,31 @@ _estimates_cache: dict[str, tuple[dict, datetime]] = {}
 _ESTIMATE_PERIOD_CURRENT_YEAR = "0y"
 _ESTIMATE_PERIOD_NEXT_YEAR = "+1y"
 
+# In-memory market-regime cache. Unlike the per-ticker caches above, this holds a
+# single GLOBAL snapshot (VIX, rates, currency, commodities, credit spreads) under
+# one fixed key, so one set of fetches serves every symbol analysed for 6 hours.
+# A fully-empty snapshot (all values None) is NOT cached, so a transient error
+# self-heals on the next call (same convention as the sentiment/estimates caches).
+_MARKET_REGIME_CACHE_TTL = timedelta(hours=6)
+_market_regime_cache: dict[str, tuple[dict, datetime]] = {}   # one fixed key
+_MARKET_REGIME_CACHE_KEY = "regime"
+
+# Trading sessions used for every "30-day" regime change, matching the
+# session-lookback convention of ``price_summary`` / ``_benchmark_changes``.
+_REGIME_LOOKBACK_SESSIONS = 30
+
+# Global market-regime instruments (Yahoo Finance tickers). ^VIX equity vol; ^TNX
+# 10y and ^IRX 3m Treasury yields (already quoted in percentage points, e.g. 4.65,
+# not 0.0465); EURUSD=X the euro/dollar cross; GC=F gold and CL=F WTI crude
+# futures; HYG (high-yield) and LQD (investment-grade) credit ETFs whose ratio
+# tracks credit spreads. Each is fetched independently so one failing instrument
+# never blanks the others.
+_REGIME_TICKERS: dict[str, str] = {
+    "vix": "^VIX", "treasury_10y": "^TNX", "treasury_3m": "^IRX",
+    "eurusd": "EURUSD=X", "gold": "GC=F", "oil_wti": "CL=F",
+    "hyg": "HYG", "lqd": "LQD",
+}
+
 # Exchange-suffix -> benchmark index (longest matching suffix wins). Index
 # tickers are Yahoo Finance symbols; the default fallback is the S&P 500.
 _BENCHMARK_SUFFIX_MAP: dict[str, str] = {
@@ -260,6 +285,107 @@ def _sum_eps_revisions(revisions_df: pd.DataFrame | None, column: str) -> int | 
             total += as_int
             found = True
     return total if found else None
+
+
+def _empty_market_regime() -> dict:
+    """A fresh, fully-empty market-regime snapshot (every key present, all None).
+
+    :meth:`MarketDataService.get_market_regime` only ever puts a plain float or
+    None in these slots, so any consumer can treat a None as "data unavailable".
+    """
+    return {
+        "vix_level": None,
+        "vix_change_30d_pct": None,
+        "treasury_10y_yield_pct": None,
+        "treasury_10y_yield_change_30d_bps": None,
+        "treasury_3m_yield_pct": None,
+        "yield_curve_10y_3m_spread_pct": None,
+        "eurusd_level": None,
+        "eurusd_change_30d_pct": None,
+        "gold_change_30d_pct": None,
+        "oil_wti_change_30d_pct": None,
+        "credit_hyg_lqd_ratio_change_30d_pct": None,
+    }
+
+
+def _regime_close_series(ticker: str) -> pd.Series | None:
+    """Fetch one regime instrument's 6-month daily close series, or None on failure.
+
+    Each instrument is fetched in its OWN call so a single failing ticker never
+    blanks the rest of the regime snapshot — the same per-source isolation used by
+    :meth:`MarketDataService.get_sentiment_snapshot`.
+    """
+    try:
+        history = yf.Ticker(ticker).history(
+            period="6mo", interval="1d", auto_adjust=False, actions=False
+        )
+    except Exception:
+        return None
+    try:
+        if history is None or history.empty or "Close" not in history.columns:
+            return None
+        closes = history["Close"].dropna()
+        return closes if not closes.empty else None
+    except Exception:
+        return None
+
+
+def _series_level(closes: pd.Series | None) -> float | None:
+    """Last (most recent) value of a close series as a plain float, else None."""
+    if closes is None or len(closes) == 0:
+        return None
+    return _safe_float(closes.iloc[-1])
+
+
+def _series_change_pct(closes: pd.Series | None, n_periods: int) -> float | None:
+    """Percentage change over ``n_periods`` trading sessions (``iloc[-1 - n]``).
+
+    Same lookback arithmetic as :meth:`price_summary` / :meth:`_benchmark_changes`:
+    None when the series is too short, or the past value is missing/zero.
+    """
+    if closes is None or len(closes) <= n_periods:
+        return None
+    last = _safe_float(closes.iloc[-1])
+    past = _safe_float(closes.iloc[-1 - n_periods])
+    if last is None or past is None or past == 0:
+        return None
+    return (last - past) / past * 100.0
+
+
+def _series_change_abs(closes: pd.Series | None, n_periods: int) -> float | None:
+    """Absolute change over ``n_periods`` sessions (last minus value ``n`` sessions ago).
+
+    Used for the Treasury-yield move, which is meaningful in absolute yield points
+    (the caller converts to basis points), not as a percentage. None when the
+    series is too short or either endpoint is missing.
+    """
+    if closes is None or len(closes) <= n_periods:
+        return None
+    last = _safe_float(closes.iloc[-1])
+    past = _safe_float(closes.iloc[-1 - n_periods])
+    if last is None or past is None:
+        return None
+    return last - past
+
+
+def _hyg_lqd_ratio_change_pct(
+    hyg: pd.Series | None, lqd: pd.Series | None, n_periods: int
+) -> float | None:
+    """30-session % change of the HYG/LQD close ratio (a credit-spread proxy).
+
+    The two series are aligned by date (pandas index alignment) BEFORE the ratio
+    is formed, then the % change is taken on the ratio itself (not on the
+    difference of the two closes). A falling ratio means high-yield is
+    underperforming investment-grade, i.e. widening credit spreads (risk-off).
+    None when either series is missing or the aligned ratio is too short.
+    """
+    if hyg is None or lqd is None:
+        return None
+    try:
+        ratio = (hyg / lqd).dropna()
+    except Exception:
+        return None
+    return _series_change_pct(ratio, n_periods)
 
 
 def _safe_float(value: object) -> float | None:
@@ -926,6 +1052,80 @@ class MarketDataService:
         # top-level value), so a transient all-empty failure self-heals.
         if any(value is not None for value in result.values()):
             _estimates_cache[normalized] = (result, now)
+        return result
+
+    def get_market_regime(self) -> dict:
+        """Global market-regime snapshot (equity vol, rates, FX, commodities, credit).
+
+        Unlike the per-ticker snapshots, this is GLOBAL market context not tied to
+        any one symbol: the VIX level and its 30-session change, the 10y/3m Treasury
+        yields with their spread (a negative spread is an inverted curve, a classic
+        recession signal), the EUR/USD level, 30-session moves in gold and WTI crude,
+        and the 30-session change of the HYG/LQD ratio (a credit-spread proxy).
+
+        ALWAYS returns every key of :func:`_empty_market_regime` (a float or None,
+        never another type) and never raises. Each instrument is fetched in its OWN
+        try/except (via :func:`_regime_close_series`) so one failing ticker never
+        blanks the others — the same principle as :meth:`get_sentiment_snapshot`.
+        Behind a 6-hour cache under one fixed key, so a single set of fetches serves
+        every symbol analysed; a fully-empty snapshot (all None) is NOT cached, so a
+        transient error self-heals on the next call.
+        """
+        now = datetime.utcnow()
+        cached = _market_regime_cache.get(_MARKET_REGIME_CACHE_KEY)
+        if cached is not None and (now - cached[1]) < _MARKET_REGIME_CACHE_TTL:
+            return cached[0]
+
+        result = _empty_market_regime()
+
+        # One fetch per instrument, each isolated inside _regime_close_series so a
+        # single failing ticker cannot blank the rest of the snapshot.
+        closes = {name: _regime_close_series(sym) for name, sym in _REGIME_TICKERS.items()}
+
+        # Equity volatility.
+        result["vix_level"] = _series_level(closes["vix"])
+        result["vix_change_30d_pct"] = _series_change_pct(
+            closes["vix"], _REGIME_LOOKBACK_SESSIONS
+        )
+
+        # Rates: 10y/3m yields (already in percentage points) and the 30-session
+        # 10y move expressed in basis points.
+        result["treasury_10y_yield_pct"] = _series_level(closes["treasury_10y"])
+        yield_move = _series_change_abs(closes["treasury_10y"], _REGIME_LOOKBACK_SESSIONS)
+        result["treasury_10y_yield_change_30d_bps"] = (
+            yield_move * 100.0 if yield_move is not None else None
+        )
+        result["treasury_3m_yield_pct"] = _series_level(closes["treasury_3m"])
+        # Yield-curve spread only when BOTH legs are available.
+        if (
+            result["treasury_10y_yield_pct"] is not None
+            and result["treasury_3m_yield_pct"] is not None
+        ):
+            result["yield_curve_10y_3m_spread_pct"] = (
+                result["treasury_10y_yield_pct"] - result["treasury_3m_yield_pct"]
+            )
+
+        # Currency & commodities.
+        result["eurusd_level"] = _series_level(closes["eurusd"])
+        result["eurusd_change_30d_pct"] = _series_change_pct(
+            closes["eurusd"], _REGIME_LOOKBACK_SESSIONS
+        )
+        result["gold_change_30d_pct"] = _series_change_pct(
+            closes["gold"], _REGIME_LOOKBACK_SESSIONS
+        )
+        result["oil_wti_change_30d_pct"] = _series_change_pct(
+            closes["oil_wti"], _REGIME_LOOKBACK_SESSIONS
+        )
+
+        # Credit spreads via the HYG/LQD ratio (falling = widening spreads/risk-off).
+        result["credit_hyg_lqd_ratio_change_30d_pct"] = _hyg_lqd_ratio_change_pct(
+            closes["hyg"], closes["lqd"], _REGIME_LOOKBACK_SESSIONS
+        )
+
+        # Cache only a snapshot that actually carries data, so a transient all-empty
+        # failure self-heals on the next call.
+        if any(value is not None for value in result.values()):
+            _market_regime_cache[_MARKET_REGIME_CACHE_KEY] = (result, now)
         return result
 
     def benchmark_for(self, ticker: str) -> str:

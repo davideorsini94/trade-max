@@ -32,6 +32,17 @@ and central-bank policy, inflation, growth/recession signals, currency moves, \
 commodity prices, geopolitics, and sector-specific policy or regulation. Use the \
 symbol's currency, exchange, sector and industry (when provided) to judge relevance.
 
+A deterministic market_regime block may also be provided alongside the headlines. It
+is computed from market data, not from news: vix_level and vix_change_30d_pct (equity
+volatility), treasury_10y_yield_pct / treasury_3m_yield_pct and their
+yield_curve_10y_3m_spread_pct (rates and curve; a negative spread is an inverted
+curve), eurusd_level (currency), gold and oil 30-day changes (commodities), and
+credit_hyg_lqd_ratio_change_30d_pct (credit spreads: a falling HYG/LQD ratio means
+widening spreads and risk-off). Treat these numbers as hard evidence about the CURRENT
+regime when judging how the headlines transmit to this symbol; the headlines remain
+your ONLY source for events. A null field simply means that data was unavailable — do
+not guess it.
+
 Source weighting:
 - Official statistical releases (e.g. CPI, employment) and central-bank/regulator \
 statements are hard data: weight them above financial-press commentary and \
@@ -88,6 +99,7 @@ class MacroNewsAnalystAgent(BaseAgent):
         payload: dict[str, Any] = {
             "symbol": descriptor,
             "macro_news": ctx.macro_news,
+            "market_regime": ctx.market_regime,
         }
         return (
             "Assess the macro backdrop for this symbol from the following curated "

@@ -40,6 +40,20 @@ const SECTIONS: SourceSection[] = [
     items: [{ name: "Yahoo Finance (yfinance) — raccomandazioni, insider trading, azionariato istituzionale" }],
   },
   {
+    title: "Contesto di mercato (regime)",
+    intro:
+      "Per capire il clima generale dei mercati (non il singolo titolo), TradeMax legge da Yahoo Finance alcuni indicatori globali. Servono all'Analista Macro e al Validatore del rischio per giudicare se è un momento di calma o di tensione: quando la paura sale conviene investire meno e con stop più stretti.",
+    items: [
+      { name: "VIX", detail: "l'indice della paura: misura quanta turbolenza i mercati si aspettano; valori alti (sopra ~25) indicano nervosismo" },
+      { name: "Rendimenti dei Treasury USA (10 anni e 3 mesi)", detail: "i tassi sui titoli di Stato americani e la loro differenza (curva dei rendimenti): quando quella a lungo termine scende sotto quella a breve la curva è \"invertita\", un classico segnale di possibile recessione" },
+      { name: "Cambio EUR/USD", detail: "quanti dollari vale un euro, per il contesto valutario" },
+      { name: "Oro e petrolio (WTI)", detail: "variazione a 30 giorni delle materie prime, spesso spia di inflazione e avversione al rischio" },
+      { name: "Rapporto HYG/LQD", detail: "confronto tra obbligazioni ad alto rendimento e quelle di qualità: se il rapporto scende gli spread creditizi si allargano, segnale di avversione al rischio (risk-off)" },
+    ],
+    note:
+      "Sono dati di mercato calcolati, non notizie: quando un valore manca resta semplicemente vuoto, senza inventarlo.",
+  },
+  {
     title: "Notizie macroeconomiche",
     intro:
       "L'Analista Macro legge solo queste fonti selezionate e verificate (nessuna ricerca libera sul web), per garantire notizie da fonti ufficiali e affidabili:",

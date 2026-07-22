@@ -314,8 +314,16 @@ def _build_metrics(price_summary: dict, latest: dict) -> MarketMetrics:
     )
 
 
-def _build_risk_metrics(metrics: MarketMetrics, fundamentals: dict, sentiment: dict) -> dict:
-    """Deterministic risk metrics for the validator (blueprint §5.4/§5.5)."""
+def _build_risk_metrics(
+    metrics: MarketMetrics, fundamentals: dict, sentiment: dict, market_regime: dict
+) -> dict:
+    """Deterministic risk metrics for the validator (blueprint §5.4/§5.5).
+
+    A slim, computed slice — not the full ``market_regime`` block: only the three
+    regime fields most relevant to sizing/stops risk (equity volatility and the
+    credit-spread trend) are surfaced here so the validator always sees them, even
+    when the macro_news agent is deterministically skipped.
+    """
     atr_pct = None
     if metrics.atr14 is not None and metrics.last_close:
         atr_pct = metrics.atr14 / metrics.last_close * 100.0
@@ -326,12 +334,18 @@ def _build_risk_metrics(metrics: MarketMetrics, fundamentals: dict, sentiment: d
     days_to_next_earnings = (
         sentiment.get("days_to_earnings") if isinstance(sentiment, dict) else None
     )
+    regime = market_regime if isinstance(market_regime, dict) else {}
     return {
         "atr_pct": atr_pct,
         "drawdown_90d_pct": metrics.drawdown_90d_pct,
         "beta": beta,
         "distance_from_sma200_pct": distance,
         "days_to_next_earnings": days_to_next_earnings,
+        "vix_level": regime.get("vix_level"),
+        "vix_change_30d_pct": regime.get("vix_change_30d_pct"),
+        "credit_hyg_lqd_ratio_change_30d_pct": regime.get(
+            "credit_hyg_lqd_ratio_change_30d_pct"
+        ),
     }
 
 
@@ -503,6 +517,12 @@ def _gather_market_data(symbol_id: int, ticker: str) -> dict:
     # Same synchronous/blocking pattern as the fundamentals/market calls above
     # (this whole function already runs inside asyncio.to_thread at its call site).
     sentiment = market.get_sentiment_snapshot(ticker)
+    # Global market-regime context (VIX, rates, FX, commodities, credit spreads).
+    # Symbol-independent and behind its own 6h cache, so this single call serves
+    # every symbol; deliberately kept OUT of the deterministic skip logic — it is
+    # always-available context (surfaced to the validator via risk_metrics), never
+    # itself a reason to run an otherwise-skipped agent.
+    market_regime = market.get_market_regime()
     relative_performance = market.get_relative_performance(
         ticker,
         price_summary.get("change_pct_30d"),
@@ -525,7 +545,7 @@ def _gather_market_data(symbol_id: int, ticker: str) -> dict:
         indicators_ctx["recent_closes"] = []
 
     metrics = _build_metrics(price_summary, latest)
-    risk_metrics = _build_risk_metrics(metrics, fundamentals, sentiment)
+    risk_metrics = _build_risk_metrics(metrics, fundamentals, sentiment, market_regime)
 
     return {
         "price_summary": price_summary,
@@ -537,6 +557,7 @@ def _gather_market_data(symbol_id: int, ticker: str) -> dict:
         "sentiment": sentiment,
         "relative_performance": relative_performance,
         "calendar": calendar,
+        "market_regime": market_regime,
         "metrics": metrics,
         "risk_metrics": risk_metrics,
     }
@@ -594,6 +615,7 @@ async def _run_analysis_locked(symbol_id: int, trigger: str, run_id: int | None)
                 sentiment=data["sentiment"],
                 relative_performance=data["relative_performance"],
                 calendar=data["calendar"],
+                market_regime=data["market_regime"],
             )
 
         # Deterministic skips: don't pay for an LLM call when an analyst has

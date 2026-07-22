@@ -56,10 +56,14 @@ missing/too far?
 - Positioning risk: is heavy insider SELLING, a DETERIORATING analyst consensus, or \
 HIGH short interest working against a bullish proposal? The days_to_next_earnings \
 value in the risk metrics tells you whether a binary earnings event is imminent.
+- Regime risk: vix_level / vix_change_30d_pct and credit_hyg_lqd_ratio_change_30d_pct \
+in the risk metrics describe the overall market regime. An elevated (above ~25) or \
+sharply rising VIX, or a falling HYG/LQD ratio (credit stress), argues for smaller \
+sizing and stricter stops on any BUY.
 
 Use the deterministic risk metrics provided (ATR as % of price, 90-day drawdown, \
-beta, and distance from the SMA200) as hard evidence — they are computed, not \
-opinions.
+beta, and distance from the SMA200, VIX level and credit-spread trend) as hard \
+evidence — they are computed, not opinions.
 
 Decision rules:
 - APPROVE only if the proposal is genuinely defensible for a conservative retail \
@@ -79,8 +83,9 @@ Writing notes_it (this is the text the user reads):
 - For EVERY risk term you cite, explain it briefly in parentheses the first time it \
 appears, following the ITALIAN OUTPUT STYLE block — e.g. drawdown (quanto il prezzo è \
 sceso dal suo massimo recente), ATR (quanto oscilla il prezzo ogni giorno, cioè la \
-volatilità), beta (quanto il titolo si muove rispetto al mercato), death cross, or an \
-oversized allocazione (la fetta di capitale investita).
+volatilità), beta (quanto il titolo si muove rispetto al mercato), VIX (l'indice della \
+paura: misura quanta turbolenza i mercati si aspettano), death cross, or an oversized \
+allocazione (la fetta di capitale investita).
 - Keep it short and honest, and end with what it means in practice for the user.
 
 Output STRICT JSON and NOTHING else — no markdown, no code fences, no text outside \

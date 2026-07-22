@@ -100,6 +100,7 @@ class AgentContext:
     sentiment: dict[str, Any] = field(default_factory=dict)
     relative_performance: dict[str, Any] = field(default_factory=dict)
     calendar: dict[str, Any] = field(default_factory=dict)
+    market_regime: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
