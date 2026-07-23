@@ -279,6 +279,9 @@ export interface EvaluationOut {
   per_agent: AgentMetrics[];
   report_it: string;
   created_at: string;
+  // Cumulative per-feature validation (blueprint §7 addendum, part 3 of 4).
+  // Raw pass-through, shape not finalized for UI consumption yet.
+  feature_stats?: Record<string, unknown> | null;
 }
 
 export interface PendingEvaluationOut {

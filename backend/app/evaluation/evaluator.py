@@ -29,6 +29,7 @@ from sqlalchemy import select
 from app.data.market import market_data_service
 from app.db import session_scope
 from app.evaluation import feedback
+from app.evaluation.features import compute_feature_stats
 from app.models import Analysis, Evaluation, PriceHistory, Recommendation, Symbol
 
 logger = logging.getLogger(__name__)
@@ -549,6 +550,15 @@ async def _run_weekly_evaluation_impl() -> Evaluation:
         }
         portfolio = _portfolio_metrics(items, symbols_cache)
 
+        # Cumulative per-feature validation (blueprint §7 addendum, part 3 of 4):
+        # never allowed to fail the evaluation itself, even though it's pure
+        # Python with no I/O -- consistent with every other step here.
+        try:
+            feature_stats = compute_feature_stats(db)
+        except Exception:
+            logger.exception("compute_feature_stats failed")
+            feature_stats = None
+
         period_start = min((item.rec.created_at for item in items), default=cutoff)
 
         evaluation = Evaluation(
@@ -563,6 +573,11 @@ async def _run_weekly_evaluation_impl() -> Evaluation:
             best_symbol=portfolio["best_symbol"],
             worst_symbol=portfolio["worst_symbol"],
             per_agent_json=json.dumps(per_agent),
+            feature_stats_json=(
+                json.dumps(feature_stats, ensure_ascii=False)
+                if feature_stats is not None
+                else None
+            ),
             report_it="",
         )
         db.add(evaluation)

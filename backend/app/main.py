@@ -54,6 +54,7 @@ _ADDED_COLUMNS: dict[str, dict[str, str]] = {
         "outcome_score_h": "FLOAT",
         "outcome_basis_h": "VARCHAR(10)",
     },
+    "evaluations": {"feature_stats_json": "TEXT"},
 }
 
 

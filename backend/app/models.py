@@ -240,6 +240,10 @@ class Evaluation(Base):
     worst_symbol: Mapped[str | None] = mapped_column(String(20), nullable=True)
     per_agent_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     report_it: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    # Cumulative per-feature validation (blueprint §7 addendum, part 3 of 4): see
+    # app.evaluation.features.compute_feature_stats. Nullable because it's
+    # computed fresh on every run and older Evaluation rows never had it.
+    feature_stats_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=datetime.utcnow
     )

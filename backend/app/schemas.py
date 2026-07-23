@@ -311,6 +311,11 @@ class EvaluationOut(BaseModel):
     per_agent: list[AgentMetrics]
     report_it: str
     created_at: datetime
+    # Cumulative per-feature validation (blueprint §7 addendum, part 3 of 4):
+    # None until compute_feature_stats has run at least once and found a
+    # non-empty cohort. Raw pass-through of app.evaluation.features' shape; no
+    # UI consumes it yet.
+    feature_stats: dict | None = None
 
 
 class PendingEvaluationOut(BaseModel):

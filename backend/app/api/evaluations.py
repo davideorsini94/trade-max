@@ -64,6 +64,14 @@ def evaluation_to_out(db: Session, ev: Evaluation) -> EvaluationOut:
     if not isinstance(per_agent_raw, dict):
         per_agent_raw = {}
 
+    try:
+        feature_stats = json.loads(ev.feature_stats_json) if ev.feature_stats_json else None
+    except (json.JSONDecodeError, TypeError):
+        logger.warning("feature_stats_json malformato per evaluation %s", ev.id)
+        feature_stats = None
+    if not isinstance(feature_stats, dict):
+        feature_stats = None
+
     per_agent: list[AgentMetrics] = []
     for agent_name, metrics in per_agent_raw.items():
         metrics = metrics if isinstance(metrics, dict) else {}
@@ -96,6 +104,7 @@ def evaluation_to_out(db: Session, ev: Evaluation) -> EvaluationOut:
         per_agent=per_agent,
         report_it=ev.report_it or "",
         created_at=ev.created_at,
+        feature_stats=feature_stats,
     )
 
 
