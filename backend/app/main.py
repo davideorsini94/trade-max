@@ -45,6 +45,7 @@ FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
 #: Extend this map when a new nullable column is added to an existing table.
 _ADDED_COLUMNS: dict[str, dict[str, str]] = {
     "llm_provider_settings": {"ollama_base_url": "TEXT"},
+    "recommendations": {"features_json": "TEXT"},
 }
 
 

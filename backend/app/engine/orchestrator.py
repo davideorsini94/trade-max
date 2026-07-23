@@ -48,6 +48,7 @@ from app.data.market import market_data_service
 from app.data.news import news_service
 from app.db import session_scope
 from app.engine.policy import MarketMetrics, PolicyEngine
+from app.evaluation.features import build_feature_snapshot
 from app.models import Analysis, AnalysisRun, AppSettings, Recommendation, Symbol
 from app.schemas import Action, RunStatus, SymbolOut
 
@@ -929,6 +930,9 @@ async def _run_analysis_locked(symbol_id: int, trigger: str, run_id: int | None)
                     policy_overridden=final.policy_overridden,
                     original_action=final.original_action,
                     original_sizing=final.original_sizing,
+                    features_json=json.dumps(
+                        build_feature_snapshot(data), ensure_ascii=False
+                    ),
                 )
             )
             run = db.get(AnalysisRun, run_id)

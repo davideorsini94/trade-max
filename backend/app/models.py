@@ -188,6 +188,12 @@ class Recommendation(Base):
     policy_overridden: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     original_action: Mapped[str | None] = mapped_column(String(8), nullable=True)
     original_sizing: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    # Deterministic feature snapshot captured at run time (blueprint §7 addendum):
+    # a versioned JSON blob (see app.evaluation.features.build_feature_snapshot)
+    # the weekly evaluation uses to test whether the newer deterministic signals
+    # are predictive. Nullable because recommendations created before this column
+    # existed have — and will never be back-filled with — a snapshot.
+    features_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     evaluated: Mapped[bool] = mapped_column(Boolean, index=True, nullable=False, default=False)
     realized_return_7d: Mapped[float | None] = mapped_column(Float, nullable=True)
     outcome_score: Mapped[float | None] = mapped_column(Float, nullable=True)
