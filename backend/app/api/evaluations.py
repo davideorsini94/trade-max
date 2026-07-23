@@ -67,6 +67,8 @@ def evaluation_to_out(db: Session, ev: Evaluation) -> EvaluationOut:
     per_agent: list[AgentMetrics] = []
     for agent_name, metrics in per_agent_raw.items():
         metrics = metrics if isinstance(metrics, dict) else {}
+        final = metrics.get("final")
+        final = final if isinstance(final, dict) else {}
         per_agent.append(
             AgentMetrics(
                 agent_name=agent_name,
@@ -74,6 +76,8 @@ def evaluation_to_out(db: Session, ev: Evaluation) -> EvaluationOut:
                 avg_signal_error=metrics.get("avg_signal_error"),
                 n_samples=int(metrics.get("n_samples") or 0),
                 trend=_accuracy_trend(db, agent_name, ev.created_at),
+                accuracy_final=final.get("accuracy"),
+                n_samples_final=int(final.get("n_samples") or 0),
             )
         )
 

@@ -257,6 +257,11 @@ export interface AgentMetrics {
   avg_signal_error: number | null;
   n_samples: number;
   trend: number[];
+  // Horizon-aware pass: same shape as accuracy/n_samples above, but scored once
+  // each recommendation matures at its OWN horizon_days (not the fixed 7 days).
+  // Stays null/0 for weeks after this shipped, until recommendations mature.
+  accuracy_final?: number | null;
+  n_samples_final?: number;
 }
 
 export interface EvaluationOut {

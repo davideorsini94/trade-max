@@ -200,6 +200,20 @@ class Recommendation(Base):
     evaluation_id: Mapped[int | None] = mapped_column(
         ForeignKey("evaluations.id", ondelete="SET NULL"), nullable=True
     )
+    # Second, horizon-aware evaluation checkpoint (blueprint §7 addendum, part 2
+    # of 4): scored once the recommendation reaches ITS OWN horizon_days (clamped
+    # 7-60), not the fixed 7-day window above, and — for BUY/SELL when a
+    # benchmark return is resolvable — relative to the benchmark instead of
+    # absolute. Independent of ``evaluated``/``outcome_score`` above, which keep
+    # their original 7-day meaning unchanged for backward compatibility.
+    evaluated_h: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    realized_return_h: Mapped[float | None] = mapped_column(Float, nullable=True)
+    benchmark_return_h: Mapped[float | None] = mapped_column(Float, nullable=True)
+    excess_return_h: Mapped[float | None] = mapped_column(Float, nullable=True)
+    outcome_score_h: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # "excess" (scored vs. benchmark_return_h) or "absolute" (HOLD, or no
+    # resolvable benchmark) — documents which basis outcome_score_h used.
+    outcome_basis_h: Mapped[str | None] = mapped_column(String(10), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, index=True, nullable=False, default=datetime.utcnow
     )

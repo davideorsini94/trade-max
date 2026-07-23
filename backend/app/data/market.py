@@ -1257,6 +1257,52 @@ class MarketDataService:
             "relative_sector_90d_pct": relative_sector_90d,
         }
 
+    def get_benchmark_window_return(
+        self, benchmark: str, start: datetime, end: datetime
+    ) -> float | None:
+        """% change of ``benchmark``'s close between the first close >= ``start``
+        and the first close >= ``end``.
+
+        Unlike :meth:`_benchmark_changes` (a fixed 30/90-session lookback from
+        *now*, cached 6h), this looks up an ARBITRARY historical window — used by
+        the weekly evaluation to score a recommendation's return against the
+        benchmark over the SAME period the recommendation was actually open,
+        whatever that period was. Not cached (``start``/``end`` differ per
+        recommendation and this runs once a week, not per-request); fetches one
+        year of daily history, comfortably covering the 7-60 day evaluation
+        horizons. Never raises; ``None`` on any failure, missing data, or when
+        either endpoint falls outside the fetched history.
+        """
+        try:
+            history = yf.Ticker(benchmark).history(
+                period="1y", interval="1d", auto_adjust=False, actions=False
+            )
+        except Exception:
+            return None
+        try:
+            if history is None or history.empty or "Close" not in history.columns:
+                return None
+            closes = history["Close"].dropna()
+            if closes.empty:
+                return None
+            index = closes.index
+            if getattr(index, "tz", None) is not None:
+                closes = closes.copy()
+                closes.index = index.tz_localize(None)
+
+            at_or_after_start = closes[closes.index >= start]
+            at_or_after_end = closes[closes.index >= end]
+            if at_or_after_start.empty or at_or_after_end.empty:
+                return None
+
+            start_price = float(at_or_after_start.iloc[0])
+            end_price = float(at_or_after_end.iloc[0])
+            if not start_price:
+                return None
+            return (end_price - start_price) / start_price * 100.0
+        except Exception:
+            return None
+
 
 # Shared instance for modules that just need a ready-to-use service without
 # managing their own lifecycle (the class itself is stateless besides the

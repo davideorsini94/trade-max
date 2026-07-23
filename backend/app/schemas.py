@@ -288,6 +288,12 @@ class AgentMetrics(BaseModel):
     avg_signal_error: float | None
     n_samples: int
     trend: list[float] = []
+    # Horizon-aware pass (blueprint §7 addendum, part 2 of 4): same shape as
+    # `accuracy`/`n_samples` above but scored once each recommendation reaches
+    # its OWN horizon_days, relative to the benchmark for BUY/SELL. None/0 until
+    # recommendations start maturing at their horizon (weeks after this shipped).
+    accuracy_final: float | None = None
+    n_samples_final: int = 0
 
 
 class EvaluationOut(BaseModel):
