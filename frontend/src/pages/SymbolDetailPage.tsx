@@ -30,14 +30,21 @@ import { parseBackendDate } from "../lib/format";
 // leave no visible trace after navigating away and back.
 const RECENT_RUN_WINDOW_MS = 30 * 60 * 1000;
 
-// Selectable chart windows (calendar days; the backend accepts 1..730 and the
-// stored daily history spans 2 years).
+// Selectable chart windows (calendar days). The backend accepts 1..ALL_TIME_DAYS
+// and fetches deeper history on demand when a range longer than the routine
+// 730-day refresh is picked (see backend/app/api/prices.py::_refresh_if_stale).
+const ALL_TIME_DAYS = 36_500; // matches backend ALL_TIME_DAYS: yfinance just
+// returns whatever history it actually has when asked to start 100 years back.
+
 const CHART_RANGES: { label: string; days: number }[] = [
   { label: "1M", days: 30 },
   { label: "3M", days: 91 },
   { label: "6M", days: 180 },
   { label: "1A", days: 365 },
   { label: "2A", days: 730 },
+  { label: "5A", days: 1825 },
+  { label: "10A", days: 3650 },
+  { label: "Sempre", days: ALL_TIME_DAYS },
 ];
 
 export default function SymbolDetailPage() {
