@@ -29,7 +29,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
 
@@ -71,6 +71,16 @@ _MAX_RECENT_CLOSES = 20
 #: fundamentals (e.g. an ETF), so the fundamentals agent is deterministically
 #: skipped rather than paying for an LLM call over an empty payload.
 _FUNDAMENTALS_CORE_FIELDS: tuple[str, ...] = ("pe", "forward_pe", "eps", "market_cap", "beta")
+
+#: Concentration-risk correlations: 90-day daily-return correlation between the
+#: analysed symbol and each currently-open BUY position (blueprint §5.4 addendum).
+#: A pair is dropped — never estimated — when fewer than _CORRELATION_MIN_OVERLAP
+#: daily returns overlap; a correlation at/above _CORRELATION_ALERT_THRESHOLD
+#: raises the validator's concentration-risk flag.
+_CORRELATION_SESSIONS = 90            # rendimenti giornalieri sulle ultime 90 sessioni
+_CORRELATION_MIN_OVERLAP = 60         # minimo di rendimenti sovrapposti per fidarsi della corr
+_CORRELATION_ALERT_THRESHOLD = 0.75   # soglia di rischio concentrazione
+_MAX_CORRELATIONS_IN_PROMPT = 5
 
 #: Core sentiment fields; when ALL are None AND there is no ratings_trend and no
 #: insider_transactions, the title has no usable sentiment data (common for many
@@ -315,14 +325,21 @@ def _build_metrics(price_summary: dict, latest: dict) -> MarketMetrics:
 
 
 def _build_risk_metrics(
-    metrics: MarketMetrics, fundamentals: dict, sentiment: dict, market_regime: dict
+    metrics: MarketMetrics,
+    fundamentals: dict,
+    sentiment: dict,
+    market_regime: dict,
+    correlations: list[dict],
 ) -> dict:
     """Deterministic risk metrics for the validator (blueprint §5.4/§5.5).
 
     A slim, computed slice — not the full ``market_regime`` block: only the three
     regime fields most relevant to sizing/stops risk (equity volatility and the
     credit-spread trend) are surfaced here so the validator always sees them, even
-    when the macro_news agent is deterministically skipped.
+    when the macro_news agent is deterministically skipped. ``correlations`` is
+    the 90-day return correlation vs. every open BUY position (see
+    :func:`_open_position_correlations`); empty when there are no open positions
+    or not enough overlapping history — never estimated.
     """
     atr_pct = None
     if metrics.atr14 is not None and metrics.last_close:
@@ -335,6 +352,7 @@ def _build_risk_metrics(
         sentiment.get("days_to_earnings") if isinstance(sentiment, dict) else None
     )
     regime = market_regime if isinstance(market_regime, dict) else {}
+    max_correlation = max((c["correlation"] for c in correlations), default=None)
     return {
         "atr_pct": atr_pct,
         "drawdown_90d_pct": metrics.drawdown_90d_pct,
@@ -346,16 +364,21 @@ def _build_risk_metrics(
         "credit_hyg_lqd_ratio_change_30d_pct": regime.get(
             "credit_hyg_lqd_ratio_change_30d_pct"
         ),
+        "open_position_correlations_90d": correlations or None,
+        "max_open_position_correlation_90d": max_correlation,
+        "correlation_alert": (
+            max_correlation is not None and max_correlation >= _CORRELATION_ALERT_THRESHOLD
+        ),
     }
 
 
-def _compute_open_allocation(db, current_symbol_id: int) -> float:
-    """Sum of still-open BUY allocations across the *other* active symbols.
+def _open_buy_positions(db, current_symbol_id: int) -> list[tuple[Symbol, Recommendation]]:
+    """The *other* active symbols whose most recent BUY is still open.
 
     A position is "open" when a symbol's most recent BUY recommendation is not
     followed by a later SELL for the same symbol (blueprint §5.5 / rule 10).
     """
-    total = 0.0
+    positions: list[tuple[Symbol, Recommendation]] = []
     symbols = (
         db.execute(
             select(Symbol).where(Symbol.is_active.is_(True), Symbol.id != current_symbol_id)
@@ -385,8 +408,65 @@ def _compute_open_allocation(db, current_symbol_id: int) -> float:
             .limit(1)
         ).scalar_one_or_none()
         if later_sell is None:
-            total += float(last_buy.allocation_pct or 0.0)
-    return total
+            positions.append((sym, last_buy))
+    return positions
+
+
+def _compute_open_allocation(db, current_symbol_id: int) -> float:
+    """Sum of still-open BUY allocations across the *other* active symbols."""
+    return sum(
+        float(rec.allocation_pct or 0.0) for _sym, rec in _open_buy_positions(db, current_symbol_id)
+    )
+
+
+def _daily_returns_by_session(df: pd.DataFrame) -> pd.Series:
+    """Daily % returns over the last ``_CORRELATION_SESSIONS`` sessions, indexed by session date.
+
+    ``price_history.ts`` is midnight *local exchange time* converted to naive
+    UTC, so a non-US exchange can land on e.g. 22:00-23:00 UTC of the PRIOR
+    calendar day. Joining two such series on the raw ``ts`` would misalign
+    cross-exchange pairs by a day, so the index is first normalized to a
+    session DATE via a +12h shift (safely inside any exchange's UTC offset)
+    before computing returns — this is what lets ``Series.corr`` (which aligns
+    by index) actually line up same-day sessions across exchanges.
+    """
+    if not isinstance(df, pd.DataFrame) or df.empty or "close" not in df.columns:
+        return pd.Series(dtype=float)
+    closes = df["close"].dropna().tail(_CORRELATION_SESSIONS + 1)
+    if closes.empty:
+        return pd.Series(dtype=float)
+    session_dates = [(ts + timedelta(hours=12)).date() for ts in closes.index]
+    closes = pd.Series(closes.values, index=pd.Index(session_dates))
+    return closes.pct_change().dropna()
+
+
+def _open_position_correlations(db, current_symbol_id: int, df_daily: pd.DataFrame) -> list[dict]:
+    """90-day daily-return correlation vs. every currently-open BUY position.
+
+    Deterministic and DB-only (no network): reuses the already-fetched
+    ``price_history`` for every open position. A pair is DROPPED — never
+    estimated — when fewer than ``_CORRELATION_MIN_OVERLAP`` daily returns
+    overlap between the two symbols. Results are sorted by correlation
+    (descending) and capped at ``_MAX_CORRELATIONS_IN_PROMPT`` to bound the
+    validator's prompt cost.
+    """
+    ret_current = _daily_returns_by_session(df_daily)
+    if ret_current.empty:
+        return []
+
+    results: list[dict] = []
+    for sym, _rec in _open_buy_positions(db, current_symbol_id):
+        other_df = market_data_service.get_history_df(db, sym.id, interval="1d", days=180)
+        ret_other = _daily_returns_by_session(other_df)
+        if ret_other.empty:
+            continue
+        corr = ret_current.corr(ret_other, min_periods=_CORRELATION_MIN_OVERLAP)
+        if pd.isna(corr):
+            continue
+        results.append({"ticker": sym.ticker, "correlation": round(float(corr), 2)})
+
+    results.sort(key=lambda item: item["correlation"], reverse=True)
+    return results[:_MAX_CORRELATIONS_IN_PROMPT]
 
 
 # --------------------------------------------------------------------------- #
@@ -491,6 +571,12 @@ def _gather_market_data(symbol_id: int, ticker: str) -> dict:
         df_daily = market.get_history_df(db, symbol_id, interval="1d", days=730)
 
         try:
+            correlations = _open_position_correlations(db, symbol_id, df_daily)
+        except Exception:
+            logger.warning("Calcolo correlazioni posizioni aperte fallito", exc_info=True)
+            correlations = []
+
+        try:
             macro_news = news.fetch_macro(db)
         except Exception:
             logger.warning("Fetch news macro fallito", exc_info=True)
@@ -545,7 +631,7 @@ def _gather_market_data(symbol_id: int, ticker: str) -> dict:
         indicators_ctx["recent_closes"] = []
 
     metrics = _build_metrics(price_summary, latest)
-    risk_metrics = _build_risk_metrics(metrics, fundamentals, sentiment, market_regime)
+    risk_metrics = _build_risk_metrics(metrics, fundamentals, sentiment, market_regime, correlations)
 
     return {
         "price_summary": price_summary,

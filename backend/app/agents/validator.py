@@ -60,6 +60,13 @@ value in the risk metrics tells you whether a binary earnings event is imminent.
 in the risk metrics describe the overall market regime. An elevated (above ~25) or \
 sharply rising VIX, or a falling HYG/LQD ratio (credit stress), argues for smaller \
 sizing and stricter stops on any BUY.
+- Concentration risk: open_position_correlations_90d in the risk metrics lists the \
+90-day daily-return correlation between this symbol and each currently open BUY \
+position (computed from stored prices, not an opinion). A correlation at or above \
+0.75 (correlation_alert true) means a BUY would add exposure that moves together \
+with an existing position: challenge the sizing and prefer a smaller allocation, a \
+staged entry, or a REVISE. A null value means there are no open positions or not \
+enough overlapping history.
 
 Use the deterministic risk metrics provided (ATR as % of price, 90-day drawdown, \
 beta, and distance from the SMA200, VIX level and credit-spread trend) as hard \
@@ -84,8 +91,9 @@ Writing notes_it (this is the text the user reads):
 appears, following the ITALIAN OUTPUT STYLE block — e.g. drawdown (quanto il prezzo è \
 sceso dal suo massimo recente), ATR (quanto oscilla il prezzo ogni giorno, cioè la \
 volatilità), beta (quanto il titolo si muove rispetto al mercato), VIX (l'indice della \
-paura: misura quanta turbolenza i mercati si aspettano), death cross, or an oversized \
-allocazione (la fetta di capitale investita).
+paura: misura quanta turbolenza i mercati si aspettano), correlazione (quanto due \
+titoli tendono a muoversi insieme), death cross, or an oversized allocazione (la \
+fetta di capitale investita).
 - Keep it short and honest, and end with what it means in practice for the user.
 
 Output STRICT JSON and NOTHING else — no markdown, no code fences, no text outside \

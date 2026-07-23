@@ -238,7 +238,7 @@ def test_build_risk_metrics_propagates_regime_fields() -> None:
         "eurusd_level": 1.141,  # not surfaced in risk_metrics; must be ignored
     }
 
-    risk_metrics = orchestrator._build_risk_metrics(metrics, {}, {}, market_regime)
+    risk_metrics = orchestrator._build_risk_metrics(metrics, {}, {}, market_regime, [])
 
     assert risk_metrics["vix_level"] == pytest.approx(16.91)
     assert risk_metrics["vix_change_30d_pct"] == pytest.approx(-15.45)
