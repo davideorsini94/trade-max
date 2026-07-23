@@ -20,10 +20,12 @@ from __future__ import annotations
 
 import json
 import logging
+from typing import Any
 
 from sqlalchemy import select
 
 from app.db import session_scope
+from app.evaluation.features import FEATURE_SPECS
 from app.llm.prefs import get_pref
 from app.models import AgentFeedback, Analysis, Evaluation, Recommendation, Symbol
 
@@ -44,16 +46,35 @@ AGENT_NAMES: tuple[str, ...] = ANALYST_AGENTS + ("synthesizer", "validator")
 ACTIVE_FEEDBACK_KEEP = 3
 MAX_LESSONS = 3
 MAX_WORST_CASES = 3
+# Feature-aware coaching (blueprint §7 addendum, part 4 of 4): caps on how many
+# cumulative signal_conditions and per-case feature values reach the coach
+# prompt, to keep this weekly, LLM-backed call's payload bounded.
+MAX_SIGNAL_CONDITIONS = 6
+MAX_CASE_FEATURES = 6
+#: Literal the coach prompt is told to treat as "not enough cumulative history
+#: yet -- do not invent a condition" (matches app.evaluation.features' own
+#: per-bucket/rank-IC status string).
+INSUFFICIENT_DATA = "dati_insufficienti"
 
 _LESSONS_SYSTEM_PROMPT = (
     "You are a performance coach for an AI financial-analysis agent named "
     '"{agent}". You are given its scored track record over the latest weekly '
-    "review, its worst misses, and the lessons it is already applying. Write at "
-    "most 3 concrete, actionable lessons that would measurably improve its next "
-    "analyses.\n"
+    "review, its worst misses, the lessons it is already applying, and — once "
+    "enough history has accumulated — signal_conditions: deterministic market "
+    "conditions (a specific feature/bucket this agent's own signals are drawn "
+    "from) that were CUMULATIVELY associated with its calls beating or missing "
+    "the market, each with its own sample size (n) and accuracy. Some "
+    "worst_cases also carry a 'features' block: the deterministic signals that "
+    "were actually true for THAT specific miss. Write at most 3 concrete, "
+    "actionable lessons that would measurably improve its next analyses.\n"
     "Rules:\n"
     "- Each lesson: imperative, specific, under 25 words, in English.\n"
     "- Reference the observed error patterns; do NOT give generic advice.\n"
+    "- When signal_conditions has entries, tie at least one lesson to a named "
+    "condition (its feature and bucket) instead of a vague trend.\n"
+    '- signal_conditions being the string "dati_insufficienti" means there is '
+    "not yet enough cumulative history to trust any one condition: do NOT "
+    "invent or assume one — base your lessons on worst_cases and metrics only.\n"
     "- Do not repeat lessons it already applies unless you sharpen them.\n"
     "- Invent no facts beyond the provided data.\n"
     "- lessons_it is read by a NON-EXPERT with no finance background: write it in "
@@ -141,6 +162,99 @@ def get_active_lessons(db, agent_name: str, limit: int = 5) -> list[str]:
 
 
 # --------------------------------------------------------------------------- #
+# Feature-aware coaching (blueprint §7 addendum, part 4 of 4)
+# --------------------------------------------------------------------------- #
+# Both helpers below are PURE (no DB, no I/O): they only reshape data already
+# read elsewhere (compute_feature_stats' cumulative stats, and a single rec's
+# own features_json snapshot), which is what makes them directly testable.
+
+
+def _signal_conditions_for_agent(feature_stats: dict | None, agent: str) -> list[dict] | str:
+    """Up to ``MAX_SIGNAL_CONDITIONS`` cumulative "ok" bucket conditions for
+    ``agent``'s own features, ranked by how far their accuracy sits from a coin
+    flip (most informative first); or the literal string
+    :data:`INSUFFICIENT_DATA` when none qualify yet (never invented).
+    """
+    features = feature_stats.get("features") if isinstance(feature_stats, dict) else None
+    if not isinstance(features, dict):
+        return INSUFFICIENT_DATA
+
+    conditions: list[dict[str, Any]] = []
+    for spec in FEATURE_SPECS:
+        if spec.agent != agent:
+            continue
+        entry = features.get(spec.name)
+        buckets = entry.get("buckets") if isinstance(entry, dict) else None
+        if not isinstance(buckets, dict):
+            continue
+        for bucket_name, stat in buckets.items():
+            if not isinstance(stat, dict) or stat.get("status") != "ok":
+                continue
+            conditions.append(
+                {
+                    "feature": spec.name,
+                    "bucket": bucket_name,
+                    "n": stat.get("n"),
+                    "accuracy": stat.get("accuracy"),
+                    "avg_excess_return_pct": stat.get("avg_excess_return_pct"),
+                }
+            )
+
+    if not conditions:
+        return INSUFFICIENT_DATA
+    conditions.sort(key=lambda c: abs((c.get("accuracy") or 0.5) - 0.5), reverse=True)
+    return conditions[:MAX_SIGNAL_CONDITIONS]
+
+
+def _feature_values_for_agent(features_json: str | None, agent: str) -> dict[str, Any]:
+    """Up to ``MAX_CASE_FEATURES`` raw feature values belonging to ``agent``,
+    read from one recommendation's own ``features_json`` snapshot. Returns an
+    empty dict (never raises) when the snapshot is missing, malformed, or has
+    nothing for this agent -- e.g. every pre-existing recommendation, and the
+    synthesizer (no feature is attributed to it in ``FEATURE_SPECS``).
+    """
+    if not features_json:
+        return {}
+    try:
+        snapshot = json.loads(features_json)
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    if not isinstance(snapshot, dict):
+        return {}
+
+    values: dict[str, Any] = {}
+    for spec in FEATURE_SPECS:
+        if spec.agent != agent:
+            continue
+        value = snapshot.get(spec.name)
+        if value is not None:
+            values[spec.name] = value
+        if len(values) >= MAX_CASE_FEATURES:
+            break
+    return values
+
+
+def _build_agent_payload(
+    agent: str,
+    metrics: dict,
+    worst_cases: list[dict],
+    active_lessons: list[str],
+    feature_stats: dict | None,
+) -> dict[str, Any]:
+    """Pure: assemble one agent's full coaching payload (testable without a DB)."""
+    return {
+        "metrics": {
+            "accuracy": metrics.get("accuracy"),
+            "avg_signal_error": metrics.get("avg_signal_error"),
+            "n_samples": int(metrics.get("n_samples") or 0),
+        },
+        "worst_cases": worst_cases,
+        "active_lessons": active_lessons,
+        "signal_conditions": _signal_conditions_for_agent(feature_stats, agent),
+    }
+
+
+# --------------------------------------------------------------------------- #
 # Worst-case gathering (compact examples fed to the coach prompt)
 # --------------------------------------------------------------------------- #
 
@@ -193,16 +307,18 @@ def _gather_worst_cases(db, evaluation_id: int) -> dict[str, list[dict]]:
             if analysis is None or analysis.signal is None or analysis.status != "OK":
                 continue
             signal_error = abs(analysis.signal - _clamp(ret / 5.0))
-            analyst_cases[agent].append(
-                {
-                    "ticker": ticker,
-                    "signal": round(analysis.signal, 3),
-                    "confidence": _round(analysis.confidence, 3),
-                    "realized_return_7d": round(ret, 2),
-                    "outcome_score": round(score, 3),
-                    "signal_error": round(signal_error, 3),
-                }
-            )
+            case = {
+                "ticker": ticker,
+                "signal": round(analysis.signal, 3),
+                "confidence": _round(analysis.confidence, 3),
+                "realized_return_7d": round(ret, 2),
+                "outcome_score": round(score, 3),
+                "signal_error": round(signal_error, 3),
+            }
+            features = _feature_values_for_agent(rec.features_json, agent)
+            if features:
+                case["features"] = features
+            analyst_cases[agent].append(case)
 
         common = {
             "ticker": ticker,
@@ -211,8 +327,17 @@ def _gather_worst_cases(db, evaluation_id: int) -> dict[str, list[dict]]:
             "realized_return_7d": round(ret, 2),
             "outcome_score": round(score, 3),
         }
-        synth_cases.append(dict(common))
-        validator_cases.append({**common, "verdict": rec.validator_verdict})
+        synth_case = dict(common)
+        synth_features = _feature_values_for_agent(rec.features_json, "synthesizer")
+        if synth_features:
+            synth_case["features"] = synth_features
+        synth_cases.append(synth_case)
+
+        validator_case = {**common, "verdict": rec.validator_verdict}
+        validator_features = _feature_values_for_agent(rec.features_json, "validator")
+        if validator_features:
+            validator_case["features"] = validator_features
+        validator_cases.append(validator_case)
 
     result: dict[str, list[dict]] = {}
     for agent in ANALYST_AGENTS:
@@ -277,19 +402,28 @@ async def generate_lessons(evaluation_id: int) -> None:
         if not isinstance(per_agent, dict):
             per_agent = {}
 
+        try:
+            feature_stats = (
+                json.loads(evaluation.feature_stats_json)
+                if evaluation.feature_stats_json
+                else None
+            )
+        except (json.JSONDecodeError, TypeError):
+            feature_stats = None
+        if not isinstance(feature_stats, dict):
+            feature_stats = None
+
         worst_cases = _gather_worst_cases(db, evaluation_id)
         payloads: dict[str, dict] = {}
         for agent in AGENT_NAMES:
             metrics = per_agent.get(agent) if isinstance(per_agent.get(agent), dict) else {}
-            payloads[agent] = {
-                "metrics": {
-                    "accuracy": metrics.get("accuracy"),
-                    "avg_signal_error": metrics.get("avg_signal_error"),
-                    "n_samples": int(metrics.get("n_samples") or 0),
-                },
-                "worst_cases": worst_cases.get(agent, []),
-                "active_lessons": get_active_lessons(db, agent),
-            }
+            payloads[agent] = _build_agent_payload(
+                agent,
+                metrics,
+                worst_cases.get(agent, []),
+                get_active_lessons(db, agent),
+                feature_stats,
+            )
 
     # Phase 2: one LLM call per agent (no DB session held across the await).
     from app.api.deps import get_llm_client  # lazy: avoids an import cycle
@@ -305,6 +439,7 @@ async def generate_lessons(evaluation_id: int) -> None:
                 "metrics": payload["metrics"],
                 "worst_cases": payload["worst_cases"],
                 "active_lessons": payload["active_lessons"],
+                "signal_conditions": payload["signal_conditions"],
             },
             ensure_ascii=False,
         )
