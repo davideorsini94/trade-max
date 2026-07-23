@@ -21,6 +21,7 @@ from app.api import (
     recommendations,
     settings,
     symbols,
+    transactions,
     universe,
 )
 
@@ -30,6 +31,7 @@ api_router.include_router(symbols.router)
 api_router.include_router(prices.router)
 api_router.include_router(analysis.router)
 api_router.include_router(recommendations.router)
+api_router.include_router(transactions.router)
 api_router.include_router(evaluations.router)
 api_router.include_router(feedback.router)
 api_router.include_router(settings.router)

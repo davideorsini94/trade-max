@@ -114,3 +114,44 @@ def test_reco_out_advice_none_when_missing_or_empty(
     body = resp.json()
     assert body["advice_new_investor_it"] is None
     assert body["advice_holder_it"] is None
+
+
+# --------------------------------------------------------------------------- #
+# user_position wiring (blueprint §5.4 addendum, paper-trading positions)
+# --------------------------------------------------------------------------- #
+
+
+def _build_prompt_kwargs(**overrides):
+    base = dict(
+        analyst_outputs={},
+        price_summary={"close": 100.0},
+        risk_profile="prudente",
+        total_budget=10000.0,
+        currency="USD",
+        previous_recommendation=None,
+    )
+    base.update(overrides)
+    return base
+
+
+def test_build_user_prompt_includes_user_position_when_present() -> None:
+    position = {"status": "OPEN", "ccy": "USD", "invested": 1000.0, "pnl_est": 104.0}
+    prompt = SynthesizerAgent().build_user_prompt(
+        **_build_prompt_kwargs(user_position=position)
+    )
+    payload = json.loads(prompt.split("\n", 1)[1])
+    assert payload["user_position"] == position
+
+
+def test_build_user_prompt_omits_user_position_key_when_none() -> None:
+    prompt = SynthesizerAgent().build_user_prompt(**_build_prompt_kwargs(user_position=None))
+    payload = json.loads(prompt.split("\n", 1)[1])
+    assert "user_position" not in payload
+
+
+def test_build_user_prompt_omits_user_position_by_default() -> None:
+    # No user_position kwarg at all -> defaults to None -> key absent (zero
+    # extra tokens for the vast majority of runs with no logged transaction).
+    prompt = SynthesizerAgent().build_user_prompt(**_build_prompt_kwargs())
+    payload = json.loads(prompt.split("\n", 1)[1])
+    assert "user_position" not in payload

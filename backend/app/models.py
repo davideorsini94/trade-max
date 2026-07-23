@@ -78,6 +78,9 @@ class Symbol(Base):
     runs: Mapped[list["AnalysisRun"]] = relationship(
         back_populates="symbol", cascade="all, delete-orphan", passive_deletes=True
     )
+    transactions: Mapped[list["UserTransaction"]] = relationship(
+        back_populates="symbol", cascade="all, delete-orphan", passive_deletes=True
+    )
 
 
 class PriceHistory(Base):
@@ -374,3 +377,45 @@ class LlmProviderSettings(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
     )
+
+
+class UserTransaction(Base):
+    """Diario di trading FITTIZIO dell'utente (paper trading): nessun ordine
+    reale viene mai eseguito. Registra quanto l'utente dichiara di aver
+    speso/incassato e quando, così la pipeline può ragionare sul suo vero
+    prezzo di carico invece che su testo generico.
+
+    Semantica di ``amount`` (sempre nella valuta del titolo, di cui ``currency``
+    è uno snapshot al momento dell'inserimento):
+    * BUY : esborso TOTALE uscito dal conto, commissione inclusa.
+    * SELL: controvalore LORDO della vendita; l'incasso netto è amount*(1-fee_pct/100).
+
+    ``price_ref`` è il prezzo di chiusura della seduta usata per stimare le
+    azioni (vedi ``app.engine.positions``); resta ``None`` — e con esso
+    ``quantity_est`` — quando nessun prezzo è disponibile per quella data
+    (degrado pulito: la transazione è comunque registrata, ma la valutazione a
+    mercato non è calcolabile e non viene MAI inventata).
+    """
+
+    __tablename__ = "user_transactions"
+    __table_args__ = (Index("ix_user_tx_symbol_executed", "symbol_id", "executed_at"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    symbol_id: Mapped[int] = mapped_column(
+        ForeignKey("symbols.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    side: Mapped[str] = mapped_column(String(4), nullable=False)  # "BUY" | "SELL"
+    amount: Mapped[float] = mapped_column(Float, nullable=False)  # > 0
+    fee_pct: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)  # 0..100
+    currency: Mapped[str] = mapped_column(String(8), nullable=False)  # snapshot di Symbol.currency
+    executed_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False
+    )  # backdating consentito
+    price_ref: Mapped[float | None] = mapped_column(Float, nullable=True)  # close usato per la stima
+    quantity_est: Mapped[float | None] = mapped_column(Float, nullable=True)  # azioni stimate
+    note: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.utcnow
+    )
+
+    symbol: Mapped["Symbol"] = relationship(back_populates="transactions")

@@ -67,6 +67,13 @@ position (computed from stored prices, not an opinion). A correlation at or abov
 with an existing position: challenge the sizing and prefer a smaller allocation, a \
 staged entry, or a REVISE. A null value means there are no open positions or not \
 enough overlapping history.
+- User's actual exposure: risk_metrics.user_position (when not null) is the user's REAL \
+recorded (fictitious, paper-trading) position on THIS symbol — not an opinion, a \
+declared entry. Check the proposed stop_loss_price against the user's own \
+"avg_cost_est" and flag a proposal that would effectively double down on a position \
+already at a large unrealized loss ("pnl_pct_est"). Values ending in "_est" are \
+estimates from session closes, say so if you cite one. A null user_position simply \
+means the user has not logged owning this title.
 
 Use the deterministic risk metrics provided (ATR as % of price, 90-day drawdown, \
 beta, and distance from the SMA200, VIX level and credit-spread trend) as hard \

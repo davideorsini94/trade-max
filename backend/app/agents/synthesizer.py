@@ -99,7 +99,14 @@ whether to enter now, wait for a better level (state which price or condition), 
 away — and why. 2 to 4 short sentences.
 - advice_holder_it speaks to someone who ALREADY owns the shares: say clearly whether to \
 keep, sell, take partial profits, or where to place the stop loss (state the level) — and \
-why. 2 to 4 short sentences.
+why. 2 to 4 short sentences. When "user_position" is present in the payload, it is the \
+user's REAL recorded (fictitious, paper-trading) position on this symbol: ground \
+advice_holder_it in it — cite the actual estimated average cost ("avg_cost_est") and \
+current estimated P&L ("pnl_est"/"pnl_pct_est"), and say whether stop_loss_price sits \
+above or below that cost. Values ending in "_est" are ESTIMATES from session closes, not \
+exact fills — say "stimato" when you cite one. A loss on the existing position must NEVER \
+bias the action itself (no sunk-cost reasoning: judge the stock going forward, not the \
+user's past entry). When "user_position" is absent, keep the current generic wording.
 - BOTH must be CONSISTENT with your action, sizing_strategy, stop_loss_price and \
 take_profit_price. For example: a HOLD means "non comprare ora" for the newcomer and \
 "mantieni la posizione, con stop loss a X" for the holder; a BUY means "entra (così)" for \
@@ -155,8 +162,16 @@ class SynthesizerAgent(BaseAgent):
         total_budget: float,
         currency: str,
         previous_recommendation: dict[str, Any] | None,
+        user_position: dict[str, Any] | None = None,
     ) -> str:
-        """Serialise the aggregated decision inputs as a compact JSON payload."""
+        """Serialise the aggregated decision inputs as a compact JSON payload.
+
+        ``user_position`` (when not None) is the user's REAL, fictitious
+        (paper-trading) position on this symbol — see
+        ``app.engine.positions.compact_position_for_prompt``. It is omitted
+        from the payload entirely when there is no logged transaction, so a
+        title the user has never "bought" costs zero extra tokens.
+        """
         outputs = analyst_outputs if isinstance(analyst_outputs, dict) else {}
         reports = {key: outputs.get(key) for key in ANALYST_KEYS}
         payload: dict[str, Any] = {
@@ -169,6 +184,8 @@ class SynthesizerAgent(BaseAgent):
             },
             "previous_recommendation": previous_recommendation,
         }
+        if user_position is not None:
+            payload["user_position"] = user_position
         return (
             "Synthesize the following analyst reports and context into a single "
             "proposal, and respond with the JSON object described in your "
@@ -187,6 +204,7 @@ class SynthesizerAgent(BaseAgent):
         previous_recommendation: dict[str, Any] | None,
         lessons: list[str],
         llm: LLMClient,
+        user_position: dict[str, Any] | None = None,
     ) -> AgentResult:
         """Run the synthesizer and return its validated proposal.
 
@@ -201,6 +219,7 @@ class SynthesizerAgent(BaseAgent):
             total_budget=total_budget,
             currency=currency,
             previous_recommendation=previous_recommendation,
+            user_position=user_position,
         )
         pref_provider, pref_model = resolve_llm_pref(self.name)
         parsed, provider = await llm.complete_json(

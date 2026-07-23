@@ -23,7 +23,7 @@ from app.engine.orchestrator import (
     _open_position_correlations,
 )
 from app.engine.policy import MarketMetrics
-from app.models import AnalysisRun, PriceHistory, Recommendation, Symbol
+from app.models import AnalysisRun, PriceHistory, Recommendation, Symbol, UserTransaction
 
 # A deterministic, oscillating (non-constant, non-trending) return series so
 # correlation is well-defined (nonzero variance) and reproducible across runs.
@@ -308,3 +308,65 @@ def test_correlation_alert_threshold() -> None:
     assert at_or_above["max_open_position_correlation_90d"] == pytest.approx(
         _CORRELATION_ALERT_THRESHOLD
     )
+
+
+# --------------------------------------------------------------------------- #
+# 8. Union with real user paper-trading positions (blueprint §5.4 addendum)
+# --------------------------------------------------------------------------- #
+
+
+def _seed_user_buy(db: Session, symbol_id: int) -> None:
+    db.add(
+        UserTransaction(
+            symbol_id=symbol_id, side="BUY", amount=500.0, fee_pct=0.0,
+            currency="USD", executed_at=datetime.utcnow() - timedelta(days=1),
+        )
+    )
+    db.commit()
+
+
+def test_open_position_correlations_includes_user_only_position(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    """A symbol with ONLY a logged user BUY (no system Recommendation at all)
+    must still enter the correlation calc — the two "open position" sources
+    are unioned, not just the system's own Recommendation trail."""
+    db = db_session_factory()
+    try:
+        closes_a = _prices_from_returns(_RETURN_FRACTIONS)
+        current_id = _seed_symbol(db, "CURU1", closes_a)
+        user_only_id = _seed_symbol(db, "USRONLY1", [c * 2.0 for c in closes_a])
+        _seed_user_buy(db, user_only_id)  # NO _seed_buy() -> no Recommendation at all
+
+        df_current = orchestrator.market_data_service.get_history_df(
+            db, current_id, interval="1d", days=180
+        )
+        results = _open_position_correlations(db, current_id, df_current)
+
+        assert any(r["ticker"] == "USRONLY1" for r in results)
+    finally:
+        db.close()
+
+
+def test_open_position_correlations_does_not_duplicate_symbol_in_both_sources(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    """A symbol with BOTH a system Recommendation BUY and a user-logged BUY
+    must appear exactly once in the results."""
+    db = db_session_factory()
+    try:
+        closes_a = _prices_from_returns(_RETURN_FRACTIONS)
+        current_id = _seed_symbol(db, "CURU2", closes_a)
+        both_id = _seed_symbol(db, "BOTH1", [c * 2.0 for c in closes_a])
+        _seed_buy(db, both_id)
+        _seed_user_buy(db, both_id)
+
+        df_current = orchestrator.market_data_service.get_history_df(
+            db, current_id, interval="1d", days=180
+        )
+        results = _open_position_correlations(db, current_id, df_current)
+
+        matches = [r for r in results if r["ticker"] == "BOTH1"]
+        assert len(matches) == 1
+    finally:
+        db.close()

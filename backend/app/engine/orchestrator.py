@@ -48,8 +48,9 @@ from app.data.market import market_data_service
 from app.data.news import news_service
 from app.db import session_scope
 from app.engine.policy import MarketMetrics, PolicyEngine
+from app.engine.positions import compact_position_for_prompt, summarize_position, user_open_symbol_ids
 from app.evaluation.features import build_feature_snapshot
-from app.models import Analysis, AnalysisRun, AppSettings, Recommendation, Symbol
+from app.models import Analysis, AnalysisRun, AppSettings, Recommendation, Symbol, UserTransaction
 from app.schemas import Action, RunStatus, SymbolOut
 
 logger = logging.getLogger(__name__)
@@ -442,21 +443,35 @@ def _daily_returns_by_session(df: pd.DataFrame) -> pd.Series:
 
 
 def _open_position_correlations(db, current_symbol_id: int, df_daily: pd.DataFrame) -> list[dict]:
-    """90-day daily-return correlation vs. every currently-open BUY position.
+    """90-day daily-return correlation vs. every currently-open position.
 
-    Deterministic and DB-only (no network): reuses the already-fetched
-    ``price_history`` for every open position. A pair is DROPPED — never
-    estimated — when fewer than ``_CORRELATION_MIN_OVERLAP`` daily returns
-    overlap between the two symbols. Results are sorted by correlation
-    (descending) and capped at ``_MAX_CORRELATIONS_IN_PROMPT`` to bound the
-    validator's prompt cost.
+    "Open" means either the system's own Recommendation trail (last BUY not
+    yet followed by a SELL — unchanged, still drives the PolicyEngine's
+    cumulative-allocation cap regardless of what the user actually logged) OR
+    a real, user-recorded paper-trading BUY with no matching SELL yet (see
+    ``app.engine.positions.user_open_symbol_ids``) — the two sources are
+    UNIONED by symbol id so a title is never counted twice. Deterministic and
+    DB-only (no network): reuses the already-fetched ``price_history`` for
+    every open position. A pair is DROPPED — never estimated — when fewer
+    than ``_CORRELATION_MIN_OVERLAP`` daily returns overlap between the two
+    symbols. Results are sorted by correlation (descending) and capped at
+    ``_MAX_CORRELATIONS_IN_PROMPT`` to bound the validator's prompt cost.
     """
     ret_current = _daily_returns_by_session(df_daily)
     if ret_current.empty:
         return []
 
+    symbols_by_id: dict[int, Symbol] = {
+        sym.id: sym for sym, _rec in _open_buy_positions(db, current_symbol_id)
+    }
+    user_open_ids = user_open_symbol_ids(db, exclude_symbol_id=current_symbol_id)
+    for symbol_id in user_open_ids - symbols_by_id.keys():
+        sym = db.get(Symbol, symbol_id)
+        if sym is not None:
+            symbols_by_id[symbol_id] = sym
+
     results: list[dict] = []
-    for sym, _rec in _open_buy_positions(db, current_symbol_id):
+    for sym in symbols_by_id.values():
         other_df = market_data_service.get_history_df(db, sym.id, interval="1d", days=180)
         ret_other = _daily_returns_by_session(other_df)
         if ret_other.empty:
@@ -534,6 +549,27 @@ def _prepare_run(symbol_id: int, trigger: str, run_id: int | None) -> dict:
             else None
         )
 
+        # Fictitious paper-trading transactions the user logged for this symbol
+        # (blueprint §5.4 addendum) — serialized to plain dicts (not ORM rows)
+        # since summarize_position() runs after this session closes, once
+        # Phase 2's current close price is known.
+        user_transactions = [
+            {
+                "side": tx.side,
+                "amount": tx.amount,
+                "fee_pct": tx.fee_pct,
+                "currency": tx.currency,
+                "executed_at": tx.executed_at,
+                "price_ref": tx.price_ref,
+                "quantity_est": tx.quantity_est,
+            }
+            for tx in db.execute(
+                select(UserTransaction).where(UserTransaction.symbol_id == symbol_id)
+            )
+            .scalars()
+            .all()
+        ]
+
     return {
         "run_id": run_id,
         "fatal": False,
@@ -544,6 +580,7 @@ def _prepare_run(symbol_id: int, trigger: str, run_id: int | None) -> dict:
         "total_budget": total_budget,
         "currency": currency,
         "previous_recommendation": previous_recommendation,
+        "user_transactions": user_transactions,
     }
 
 
@@ -685,6 +722,17 @@ async def _run_analysis_locked(symbol_id: int, trigger: str, run_id: int | None)
         # Phase 2: market data (blocking work off the event loop).
         data = await asyncio.to_thread(_gather_market_data, symbol_id, prep["ticker"])
 
+        # Fictitious paper-trading position (blueprint §5.4 addendum): only
+        # computable now that Phase 2 knows the current close. Deliberately NOT
+        # added to AgentContext (it would bias the 5 objective analysts and cost
+        # ~60 tokens x 5 prompts every run) — it matters only at the DECISION
+        # level, so it reaches just the synthesizer (advice_holder_it) and the
+        # validator (via risk_metrics, concentration/cost-basis checks).
+        user_position = compact_position_for_prompt(
+            summarize_position(prep["user_transactions"], data["price_summary"].get("close"))
+        )
+        data["risk_metrics"]["user_position"] = user_position
+
         llm = _get_llm()
 
         # Phase 3: fan out over the analysts (each with its own lessons).
@@ -798,6 +846,7 @@ async def _run_analysis_locked(symbol_id: int, trigger: str, run_id: int | None)
                 total_budget=prep["total_budget"],
                 currency=prep["currency"],
                 previous_recommendation=prep["previous_recommendation"],
+                user_position=user_position,
                 lessons=_load_lessons("synthesizer"),
                 llm=llm,
             )

@@ -249,6 +249,72 @@ export interface RecommendationListOut {
   total: number;
 }
 
+// --- User transactions / positions (paper trading) ---
+
+/** Buy/sell direction of a fictitious (paper-trading) transaction. */
+export type TransactionSide = "BUY" | "SELL";
+
+/**
+ * Body for POST /api/symbols/{symbol_id}/transactions.
+ * Amounts are in the SYMBOL's currency (no FX layer). `amount` on a BUY is the
+ * total cash out (fee included); on a SELL it is the gross proceeds (fee is
+ * subtracted from the net). `executed_at` is a plain date (YYYY-MM-DD);
+ * backdating is explicitly allowed, future dates are rejected server-side.
+ */
+export interface TransactionCreate {
+  side: TransactionSide;
+  amount: number;
+  fee_pct?: number;
+  executed_at: string;
+  note?: string | null;
+}
+
+export interface TransactionOut {
+  id: number;
+  symbol_id: number;
+  side: TransactionSide;
+  amount: number;
+  fee_pct: number;
+  currency: string;
+  executed_at: string;
+  /** Session close used to estimate shares; null when no price was available. */
+  price_ref: number | null;
+  /** Estimated shares for this transaction; null when `price_ref` is null. */
+  quantity_est: number | null;
+  note: string | null;
+  created_at: string;
+}
+
+/**
+ * Aggregate (per-symbol) position derived from all transactions. Every field
+ * marked "est" is an estimate from session closes; it degrades to null (never a
+ * fabricated number) when any close is missing (`estimates_complete=false`).
+ */
+export interface PositionSummaryOut {
+  status: "OPEN" | "CLOSED" | "UNKNOWN";
+  currency: string;
+  n_transactions: number;
+  /** Σ BUY cash out (fees included). */
+  invested_total: number;
+  /** Σ SELL net proceeds. */
+  proceeds_net: number;
+  realized_cashflow: number;
+  estimates_complete: boolean;
+  est_shares_open: number | null;
+  avg_cost_est: number | null;
+  last_close: number | null;
+  current_value_est: number | null;
+  total_pnl_est: number | null;
+  total_pnl_pct_est: number | null;
+  first_buy_at: string | null;
+  last_tx_at: string | null;
+}
+
+export interface TransactionListOut {
+  items: TransactionOut[];
+  position: PositionSummaryOut | null;
+}
+
 // --- Evaluations / feedback ---
 
 export interface AgentMetrics {

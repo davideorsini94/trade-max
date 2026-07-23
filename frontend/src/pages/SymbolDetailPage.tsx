@@ -10,6 +10,8 @@ import type {
   SettingsOut,
   SymbolOverviewOut,
   SymbolWithQuote,
+  TransactionListOut,
+  TransactionSide,
 } from "../api/types";
 import { useApi } from "../hooks/useApi";
 import { usePolling } from "../hooks/usePolling";
@@ -23,6 +25,8 @@ import RecommendationCard from "../components/recommendations/RecommendationCard
 import AgentBreakdown from "../components/recommendations/AgentBreakdown";
 import RecommendationTimeline from "../components/recommendations/RecommendationTimeline";
 import RunProgress from "../components/recommendations/RunProgress";
+import PositionCard from "../components/symbols/PositionCard";
+import TransactionModal from "../components/symbols/TransactionModal";
 import { parseBackendDate } from "../lib/format";
 
 // A run that finished within this window is still shown (with its final state)
@@ -102,6 +106,17 @@ export default function SymbolDetailPage() {
     60000,
     { enabled: symbolId !== null },
   );
+
+  // Paper-trading transactions + derived position for this symbol. Owned here (not
+  // inside PositionCard) so the "Vendi" button can tell whether any BUY exists and
+  // so a new transaction refreshes the same source of truth.
+  const txQuery = useApi<TransactionListOut | null>(() => {
+    if (symbolId === null) return Promise.resolve(null);
+    return apiGet<TransactionListOut>(`/symbols/${symbolId}/transactions`);
+  }, [symbolId]);
+
+  const [txModal, setTxModal] = useState<TransactionSide | null>(null);
+  const hasBuy = (txQuery.data?.items ?? []).some((tx) => tx.side === "BUY");
 
   const [activeRunId, setActiveRunId] = useState<number | null>(null);
   const [runPollingEnabled, setRunPollingEnabled] = useState(false);
@@ -262,14 +277,32 @@ export default function SymbolDetailPage() {
           <p className="text-sm text-slate-400">{symbol.name || symbol.exchange || "—"}</p>
         </div>
         <div className="flex flex-col items-end gap-2">
-          <button
-            type="button"
-            onClick={handleAnalyze}
-            disabled={analyzing || runInProgress}
-            className="rounded-md bg-brand-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-brand-500 disabled:opacity-60"
-          >
-            {analyzing ? <Spinner size="sm" /> : runInProgress ? "Analisi in corso…" : "Analizza ora"}
-          </button>
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => setTxModal("BUY")}
+              className="rounded-md bg-gain-dark px-4 py-2 text-sm font-semibold text-white transition hover:opacity-90"
+            >
+              Compra
+            </button>
+            <button
+              type="button"
+              onClick={() => setTxModal("SELL")}
+              disabled={!hasBuy}
+              title={hasBuy ? undefined : "Registra prima un acquisto per questo titolo."}
+              className="rounded-md bg-loss-dark px-4 py-2 text-sm font-semibold text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Vendi
+            </button>
+            <button
+              type="button"
+              onClick={handleAnalyze}
+              disabled={analyzing || runInProgress}
+              className="rounded-md bg-brand-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-brand-500 disabled:opacity-60"
+            >
+              {analyzing ? <Spinner size="sm" /> : runInProgress ? "Analisi in corso…" : "Analizza ora"}
+            </button>
+          </div>
           {analyzeInfo ? <p className="max-w-xs text-right text-xs text-brand-300">{analyzeInfo}</p> : null}
           {analyzeError ? <p className="max-w-xs text-right text-xs text-loss-light">{analyzeError}</p> : null}
         </div>
@@ -357,6 +390,19 @@ export default function SymbolDetailPage() {
       </div>
 
       <div>
+        <h2 className="mb-3 text-sm font-semibold uppercase tracking-wider text-slate-400">
+          La tua posizione (simulata)
+        </h2>
+        <PositionCard
+          data={txQuery.data}
+          currency={currency}
+          loading={txQuery.loading}
+          error={txQuery.error}
+          onChanged={txQuery.refetch}
+        />
+      </div>
+
+      <div>
         <h2 className="mb-3 text-sm font-semibold uppercase tracking-wider text-slate-400">Dettaglio per agente</h2>
         <AgentBreakdown analyses={displayedRun?.analyses ?? []} runStatus={runStatus} />
       </div>
@@ -366,6 +412,18 @@ export default function SymbolDetailPage() {
         {recoListPolling.error ? <ErrorBox message={recoListPolling.error} className="mb-3" /> : null}
         <RecommendationTimeline recommendations={recoListPolling.data?.items ?? []} />
       </div>
+
+      {symbolId !== null ? (
+        <TransactionModal
+          symbolId={symbolId}
+          ticker={symbol.ticker}
+          currency={currency}
+          side={txModal ?? "BUY"}
+          open={txModal !== null}
+          onClose={() => setTxModal(null)}
+          onSaved={txQuery.refetch}
+        />
+      ) : null}
     </div>
   );
 }

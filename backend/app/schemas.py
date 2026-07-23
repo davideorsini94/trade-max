@@ -7,11 +7,11 @@ fields by the routers before instantiation.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from enum import Enum
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 # --------------------------------------------------------------------------- #
@@ -611,3 +611,79 @@ class OllamaPullStatusOut(BaseModel):
     total_bytes: int | None = None
     percent: float | None = None
     detail_it: str
+
+
+# --------------------------------------------------------------------------- #
+# Paper-trading transactions / positions (blueprint §5.4 addendum)
+# --------------------------------------------------------------------------- #
+# FICTITIOUS diary of what the user says they spent/received and when — never
+# a real order. Amounts are always in the SYMBOL's own currency (no FX layer
+# in this app); share counts are estimated from session closes, never asked.
+
+
+class TransactionCreate(BaseModel):
+    """Body of ``POST /api/symbols/{symbol_id}/transactions``.
+
+    ``amount`` on a BUY is the total cash out (fee included); on a SELL it is
+    the gross sale proceeds (the fee is subtracted from the net separately).
+    ``executed_at`` is a plain date — backdating is explicitly allowed (so the
+    analysis can be done retroactively), future dates are rejected.
+    """
+
+    side: Literal["BUY", "SELL"]
+    amount: float = Field(gt=0)
+    fee_pct: float = Field(0.0, ge=0, le=100)
+    executed_at: date
+    note: str | None = Field(None, max_length=200)
+
+    @field_validator("executed_at")
+    @classmethod
+    def _not_in_future(cls, v: date) -> date:
+        if v > datetime.utcnow().date():
+            raise ValueError("La data della transazione non può essere nel futuro.")
+        return v
+
+
+class TransactionOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    symbol_id: int
+    side: Literal["BUY", "SELL"]
+    amount: float
+    fee_pct: float
+    currency: str
+    executed_at: datetime
+    price_ref: float | None
+    quantity_est: float | None
+    note: str | None
+    created_at: datetime
+
+
+class PositionSummaryOut(BaseModel):
+    """Aggregate position for one symbol, derived from all its transactions.
+
+    Every field marked "est" is an ESTIMATE from session closes; it is null
+    (never a fabricated number) whenever ``estimates_complete`` is false.
+    """
+
+    status: Literal["OPEN", "CLOSED", "UNKNOWN"]
+    currency: str
+    n_transactions: int
+    invested_total: float
+    proceeds_net: float
+    realized_cashflow: float
+    estimates_complete: bool
+    est_shares_open: float | None
+    avg_cost_est: float | None
+    last_close: float | None
+    current_value_est: float | None
+    total_pnl_est: float | None
+    total_pnl_pct_est: float | None
+    first_buy_at: datetime | None
+    last_tx_at: datetime | None
+
+
+class TransactionListOut(BaseModel):
+    items: list[TransactionOut]
+    position: PositionSummaryOut | None
