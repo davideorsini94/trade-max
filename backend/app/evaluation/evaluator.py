@@ -227,14 +227,38 @@ def _aggregate(samples: list[tuple[bool, float, float | None]]) -> dict:
 # --------------------------------------------------------------------------- #
 
 
+#: Daily bars are stored at midnight LOCAL EXCHANGE time converted to naive UTC
+#: (04:00 for a US listing, 22:00 of the PRIOR calendar day for Milan), so the
+#: same +12h shift used for cross-exchange alignment elsewhere (see
+#: ``app.engine.orchestrator._daily_returns_by_session``) maps a raw ``ts`` to
+#: its trading-session date. A bar belongs to session date D exactly when
+#: ``(ts + 12h).date() == D``, which makes "session date >= D" equivalent to the
+#: SQL-friendly ``ts >= midnight(D) - 12h``.
+_SESSION_DATE_SHIFT = timedelta(hours=12)
+
+
+def _session_ts_threshold(target: datetime) -> datetime:
+    """Lowest ``ts`` still belonging to ``target``'s session date (or a later one)."""
+    return datetime.combine(target.date(), datetime.min.time()) - _SESSION_DATE_SHIFT
+
+
 def _first_close_at_or_after(db, symbol_id: int, target: datetime) -> float | None:
-    """First 1d close with ``ts >= target`` for a symbol, or None if absent."""
+    """First 1d close on ``target``'s trading SESSION or a later one, else None.
+
+    Compares session DATES, not raw timestamps. ``target`` keeps the
+    recommendation's time of day (e.g. 17:09) while the daily bar for that very
+    session is stored at exchange midnight (04:00 UTC for a US listing), so a
+    naive ``ts >= target`` would reject the target session's own close and
+    silently demand the NEXT one — scoring every recommendation a full session
+    late, and making the "N consigli maturi" counter promise an evaluation the
+    evaluator could not yet deliver.
+    """
     row = db.execute(
         select(PriceHistory.close)
         .where(
             PriceHistory.symbol_id == symbol_id,
             PriceHistory.interval == "1d",
-            PriceHistory.ts >= target,
+            PriceHistory.ts >= _session_ts_threshold(target),
         )
         .order_by(PriceHistory.ts.asc())
         .limit(1)
@@ -665,32 +689,59 @@ def get_pending_status(db) -> dict:
     non-technical user. This lets the UI say instead: "N consigli in attesa, M
     già maturi, il prossimo lotto sarà valutabile il ...".
 
-    Returns ``{"pending_count", "ready_count", "next_evaluable_at"}``;
-    ``next_evaluable_at`` is ``None`` when there is nothing pending.
+    Returns ``{"pending_count", "ready_count", "awaiting_price_count",
+    "next_evaluable_at"}``; ``next_evaluable_at`` is ``None`` when nothing is
+    still maturing by the calendar.
+
+    ``ready_count`` counts only what the next evaluation can ACTUALLY score:
+    being 7 days old is necessary but not sufficient, because the evaluator also
+    needs an entry price and a realized close for the target session. A
+    recommendation whose 7-day mark falls on a weekend/holiday (or whose close
+    simply has not been fetched yet) is calendar-mature but not yet scoreable,
+    and is reported separately as ``awaiting_price_count`` — otherwise the UI
+    would announce "N consigli maturi, verranno inclusi nella prossima
+    valutazione" and then score none of them.
     """
     now = datetime.utcnow()
     cutoff = now - timedelta(days=EVALUATION_WINDOW_DAYS)
 
-    rows = (
-        db.execute(
-            select(Recommendation.created_at)
-            .where(Recommendation.evaluated.is_(False))
-            .order_by(Recommendation.created_at.asc())
+    rows = db.execute(
+        select(
+            Recommendation.created_at,
+            Recommendation.symbol_id,
+            Recommendation.entry_price,
         )
-        .scalars()
-        .all()
-    )
+        .where(Recommendation.evaluated.is_(False))
+        .order_by(Recommendation.created_at.asc())
+    ).all()
 
-    ready_count = sum(1 for created_at in rows if created_at <= cutoff)
-    pending_count = len(rows) - ready_count
+    ready_count = 0
+    awaiting_price_count = 0
+    still_maturing: list[datetime] = []
+
+    for created_at, symbol_id, entry_price in rows:
+        if created_at > cutoff:
+            still_maturing.append(created_at)
+            continue
+        # Calendar-mature: mirror the evaluator's own guards so the count can
+        # never over-promise (see _run_weekly_evaluation_impl / _realized_return).
+        target = created_at + timedelta(days=EVALUATION_WINDOW_DAYS)
+        if (
+            entry_price is not None
+            and entry_price > 0
+            and _first_close_at_or_after(db, symbol_id, target) is not None
+        ):
+            ready_count += 1
+        else:
+            awaiting_price_count += 1
+
     next_evaluable_at = (
-        min(created_at for created_at in rows if created_at > cutoff) + timedelta(days=EVALUATION_WINDOW_DAYS)
-        if pending_count > 0
-        else None
+        min(still_maturing) + timedelta(days=EVALUATION_WINDOW_DAYS) if still_maturing else None
     )
 
     return {
-        "pending_count": pending_count,
+        "pending_count": len(still_maturing),
         "ready_count": ready_count,
+        "awaiting_price_count": awaiting_price_count,
         "next_evaluable_at": next_evaluable_at,
     }

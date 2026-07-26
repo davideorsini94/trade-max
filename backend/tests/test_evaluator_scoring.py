@@ -27,6 +27,7 @@ from app.evaluation.evaluator import (
     HORIZON_MIN_DAYS,
     _analyst_sample,
     _clamped_horizon,
+    _first_close_at_or_after,
     _ideal_signal,
     _norm_pct,
     _outcome_score,
@@ -37,6 +38,89 @@ from app.models import Analysis, AnalysisRun, Evaluation, PriceHistory, Recommen
 # --------------------------------------------------------------------------- #
 # 1. Pure scoring helpers
 # --------------------------------------------------------------------------- #
+
+
+def test_first_close_accepts_the_target_session_itself(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    """The target session's OWN close must count, not the one after it.
+
+    Regression guard: ``target`` keeps the recommendation's time of day (17:09
+    here) while the daily bar for that session sits at exchange midnight, so a
+    raw ``ts >= target`` comparison silently required the NEXT session and
+    scored everything a day late.
+    """
+    db = db_session_factory()
+    try:
+        symbol = Symbol(ticker="SESS1", name="Session Co", exchange="NASDAQ", currency="USD")
+        db.add(symbol)
+        db.commit()
+        db.refresh(symbol)
+        # US-style bar for session 2026-07-27, stored at exchange midnight (04:00 UTC).
+        db.add(
+            PriceHistory(
+                symbol_id=symbol.id, ts=datetime(2026, 7, 27, 4, 0), interval="1d",
+                open=50.0, high=50.0, low=50.0, close=57.0, volume=1.0,
+            )
+        )
+        db.commit()
+
+        target = datetime(2026, 7, 27, 17, 9, 35)  # same session, later clock time
+        assert _first_close_at_or_after(db, symbol.id, target) == pytest.approx(57.0)
+    finally:
+        db.close()
+
+
+def test_first_close_ignores_sessions_before_the_target(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    """A close from BEFORE the target session must never be used (no back-filling)."""
+    db = db_session_factory()
+    try:
+        symbol = Symbol(ticker="SESS2", name="Session Co 2", exchange="NASDAQ", currency="USD")
+        db.add(symbol)
+        db.commit()
+        db.refresh(symbol)
+        # Only a Friday bar; the target session is the following Sunday.
+        db.add(
+            PriceHistory(
+                symbol_id=symbol.id, ts=datetime(2026, 7, 24, 4, 0), interval="1d",
+                open=50.0, high=50.0, low=50.0, close=51.0, volume=1.0,
+            )
+        )
+        db.commit()
+
+        assert _first_close_at_or_after(db, symbol.id, datetime(2026, 7, 26, 17, 9)) is None
+    finally:
+        db.close()
+
+
+def test_first_close_handles_non_us_timestamp_offset(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    """A Milan-style bar (22:00 UTC of the PRIOR day) still maps to its own session."""
+    db = db_session_factory()
+    try:
+        symbol = Symbol(ticker="SESS3.MI", name="Milan Co", exchange="MIL", currency="EUR")
+        db.add(symbol)
+        db.commit()
+        db.refresh(symbol)
+        # Session 2026-07-27 stored as 2026-07-26 22:00 (local midnight, CEST).
+        db.add(
+            PriceHistory(
+                symbol_id=symbol.id, ts=datetime(2026, 7, 26, 22, 0), interval="1d",
+                open=10.0, high=10.0, low=10.0, close=12.5, volume=1.0,
+            )
+        )
+        db.commit()
+
+        # Target on that same session resolves; a target one session later does not.
+        assert _first_close_at_or_after(
+            db, symbol.id, datetime(2026, 7, 27, 17, 9)
+        ) == pytest.approx(12.5)
+        assert _first_close_at_or_after(db, symbol.id, datetime(2026, 7, 28, 9, 0)) is None
+    finally:
+        db.close()
 
 
 def test_norm_pct_base_window_is_unscaled():

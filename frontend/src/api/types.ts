@@ -353,6 +353,12 @@ export interface EvaluationOut {
 export interface PendingEvaluationOut {
   pending_count: number;
   ready_count: number;
+  /**
+   * 7+ days old but not yet scoreable (the close for the target session is
+   * still missing — e.g. the 7-day mark fell on a weekend). Excluded from
+   * `ready_count`, which promises only what the next evaluation can score.
+   */
+  awaiting_price_count?: number;
   next_evaluable_at: string | null;
 }
 

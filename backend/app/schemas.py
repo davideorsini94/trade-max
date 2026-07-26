@@ -326,6 +326,11 @@ class PendingEvaluationOut(BaseModel):
 
     pending_count: int
     ready_count: int
+    #: Calendar-mature (7+ days old) but not yet scoreable, because the close for
+    #: the target session is still missing — e.g. the 7-day mark landed on a
+    #: weekend/holiday. These are NOT counted in ``ready_count``, which promises
+    #: only what the next evaluation can actually score.
+    awaiting_price_count: int = 0
     next_evaluable_at: datetime | None
 
 

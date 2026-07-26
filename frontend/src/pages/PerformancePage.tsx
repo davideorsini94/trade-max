@@ -83,7 +83,10 @@ export default function PerformancePage() {
 
   const latest = evaluationsQuery.data?.[0] ?? null;
   const pending = pendingQuery.data;
-  const hasNoHistoryYet = !latest && !pending?.pending_count && !pending?.ready_count;
+  // Optional on the wire (older backends omit it): treat a missing value as 0.
+  const awaitingPrice = pending?.awaiting_price_count ?? 0;
+  const hasNoHistoryYet =
+    !latest && !pending?.pending_count && !pending?.ready_count && !awaitingPrice;
 
   return (
     <div className="space-y-8">
@@ -110,7 +113,10 @@ export default function PerformancePage() {
         </div>
       </div>
 
-      {!pendingQuery.loading && !pendingQuery.error && pending && (pending.pending_count > 0 || pending.ready_count > 0) ? (
+      {!pendingQuery.loading &&
+      !pendingQuery.error &&
+      pending &&
+      (pending.pending_count > 0 || pending.ready_count > 0 || awaitingPrice > 0) ? (
         <Card title="Ciclo di apprendimento">
           <p className="text-sm leading-relaxed text-slate-300">
             {pending.ready_count > 0 ? (
@@ -120,6 +126,18 @@ export default function PerformancePage() {
                 giorni di storico) e{" "}
                 {pending.ready_count === 1 ? "verrà incluso" : "verranno inclusi"} nella prossima
                 valutazione.{" "}
+              </>
+            ) : null}
+            {/* 7+ giorni ma senza il prezzo del giorno di riferimento: contarli tra i
+                "maturi" prometterebbe una valutazione che non può ancora avvenire. */}
+            {awaitingPrice > 0 ? (
+              <>
+                <span className="font-semibold text-slate-100">{awaitingPrice}</span>{" "}
+                {awaitingPrice === 1 ? "consiglio ha" : "consigli hanno"} superato i 7 giorni ma{" "}
+                {awaitingPrice === 1 ? "aspetta" : "aspettano"} la chiusura di mercato del giorno di
+                riferimento (se cade in un weekend o in un festivo arriva alla riapertura):{" "}
+                {awaitingPrice === 1 ? "verrà valutato" : "verranno valutati"} appena il prezzo è
+                disponibile.{" "}
               </>
             ) : null}
             {pending.pending_count > 0 && pending.next_evaluable_at ? (
