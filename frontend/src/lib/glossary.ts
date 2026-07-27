@@ -241,7 +241,7 @@ export const GLOSSARY: Record<string, GlossEntry> = {
   market_open: {
     term: "Mercato aperto",
     short:
-      "Indica se la borsa di riferimento è aperta agli scambi in questo momento. A mercato chiuso i prezzi non si aggiornano.",
+      "Indica se almeno una delle borse dei titoli che segui è aperta agli scambi in questo momento: ogni titolo segue gli orari della propria borsa (Milano e le altre europee 9:00–17:30, Londra 8:00–16:30, New York 15:30–22:00 ora italiana). A borsa chiusa i prezzi di quel titolo non si aggiornano.",
   },
 
   // --- Rischio e protezioni ---
