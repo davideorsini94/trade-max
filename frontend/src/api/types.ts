@@ -359,6 +359,12 @@ export interface PendingEvaluationOut {
    * `ready_count`, which promises only what the next evaluation can score.
    */
   awaiting_price_count?: number;
+  /**
+   * Scoreable by the second, horizon-aware pass (a recommendation already scored
+   * at 7 days can still await its own horizon). A run does real work when this
+   * OR `ready_count` is non-zero.
+   */
+  horizon_ready_count?: number;
   next_evaluable_at: string | null;
 }
 

@@ -331,6 +331,10 @@ class PendingEvaluationOut(BaseModel):
     #: weekend/holiday. These are NOT counted in ``ready_count``, which promises
     #: only what the next evaluation can actually score.
     awaiting_price_count: int = 0
+    #: Scoreable by the SECOND, horizon-aware pass (a recommendation already
+    #: scored at 7 days can still be awaiting its own horizon_days). A run does
+    #: real work when this OR ``ready_count`` is non-zero.
+    horizon_ready_count: int = 0
     next_evaluable_at: datetime | None
 
 

@@ -85,6 +85,7 @@ def test_get_pending_status_empty(db_session_factory: sessionmaker[Session]) -> 
         "pending_count": 0,
         "ready_count": 0,
         "awaiting_price_count": 0,
+        "horizon_ready_count": 0,
         "next_evaluable_at": None,
     }
 
@@ -143,6 +144,9 @@ def test_get_pending_status_all_ready_has_no_next(
         "pending_count": 0,
         "ready_count": 1,
         "awaiting_price_count": 0,
+        # Default horizon_days is 30, so a 9-day-old rec is nowhere near its own
+        # horizon: the second pass has nothing to score yet.
+        "horizon_ready_count": 0,
         "next_evaluable_at": None,
     }
 
@@ -202,6 +206,60 @@ def test_calendar_mature_without_entry_price_is_not_ready(
     assert status["awaiting_price_count"] == 1
 
 
+def test_horizon_ready_counted_even_when_seven_day_queue_is_empty(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    """A rec already scored at 7 days but now past its OWN horizon is real work.
+
+    Guards the UI gate: disabling "Esegui valutazione ora" on ``ready_count == 0``
+    alone would block a run that the horizon pass could genuinely score.
+    """
+    db = db_session_factory()
+    try:
+        symbol = Symbol(ticker="HZN", name="Horizon Corp.")
+        db.add(symbol)
+        db.commit()
+        db.refresh(symbol)
+
+        created_at = datetime.utcnow() - timedelta(days=40)  # past a 30-day horizon
+        run = AnalysisRun(symbol_id=symbol.id, status="COMPLETED", trigger="MANUAL")
+        db.add(run)
+        db.flush()
+        db.add(
+            Recommendation(
+                run_id=run.id,
+                symbol_id=symbol.id,
+                action="BUY",
+                sizing_strategy="DCA",
+                confidence=0.6,
+                validator_verdict="APPROVE",
+                entry_price=100.0,
+                horizon_days=30,
+                evaluated=True,        # 7-day queue: already done
+                evaluated_h=False,     # horizon queue: still pending
+                created_at=created_at,
+            )
+        )
+        # Close for the 30-day target session, at exchange midnight.
+        target_session = (created_at + timedelta(days=30)).date()
+        db.add(
+            PriceHistory(
+                symbol_id=symbol.id,
+                ts=datetime.combine(target_session, datetime.min.time()),
+                interval="1d",
+                open=110.0, high=110.0, low=110.0, close=110.0, volume=1_000_000.0,
+            )
+        )
+        db.commit()
+
+        status = get_pending_status(db)
+    finally:
+        db.close()
+
+    assert status["ready_count"] == 0          # nothing left in the 7-day queue
+    assert status["horizon_ready_count"] == 1  # ...but the horizon pass has work
+
+
 def test_pending_endpoint_returns_status(client: TestClient) -> None:
     resp = client.get("/api/evaluations/pending")
     assert resp.status_code == 200
@@ -210,6 +268,7 @@ def test_pending_endpoint_returns_status(client: TestClient) -> None:
         "pending_count": 0,
         "ready_count": 0,
         "awaiting_price_count": 0,
+        "horizon_ready_count": 0,
         "next_evaluable_at": None,
     }
 

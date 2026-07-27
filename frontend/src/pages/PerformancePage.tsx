@@ -83,10 +83,21 @@ export default function PerformancePage() {
 
   const latest = evaluationsQuery.data?.[0] ?? null;
   const pending = pendingQuery.data;
-  // Optional on the wire (older backends omit it): treat a missing value as 0.
+  // Optional on the wire (older backends omit them): treat a missing value as 0.
   const awaitingPrice = pending?.awaiting_price_count ?? 0;
+  const horizonReady = pending?.horizon_ready_count ?? 0;
   const hasNoHistoryYet =
     !latest && !pending?.pending_count && !pending?.ready_count && !awaitingPrice;
+  // Disable the manual run only when the status is KNOWN and both scoring passes
+  // (the 7-day checkpoint and the horizon pass) have nothing they could score —
+  // never while still loading or after a failed fetch, which would block a run
+  // that might well be useful.
+  const nothingToEvaluate =
+    !pendingQuery.loading &&
+    !pendingQuery.error &&
+    pending != null &&
+    pending.ready_count === 0 &&
+    horizonReady === 0;
 
   return (
     <div className="space-y-8">
@@ -104,11 +115,23 @@ export default function PerformancePage() {
           <button
             type="button"
             onClick={handleRunEvaluation}
-            disabled={running}
-            className="rounded-md bg-brand-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-brand-500 disabled:opacity-60"
+            disabled={running || nothingToEvaluate}
+            title={
+              nothingToEvaluate
+                ? "Nessun consiglio è pronto da valutare: servono almeno 7 giorni di storico e la chiusura di mercato del giorno di riferimento."
+                : "Esegui subito la valutazione dei consigli maturi"
+            }
+            className="rounded-md bg-brand-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-brand-500 disabled:cursor-not-allowed disabled:opacity-60"
           >
             {running ? <Spinner size="sm" /> : "Esegui valutazione ora"}
           </button>
+          {/* Without this the button is clickable while it provably cannot score
+              anything, and the run "does nothing" for no visible reason. */}
+          {nothingToEvaluate && !running ? (
+            <p className="max-w-xs text-right text-xs text-slate-500">
+              Nessun consiglio è ancora pronto da valutare.
+            </p>
+          ) : null}
           {runError ? <p className="text-xs text-loss-light">{runError}</p> : null}
         </div>
       </div>

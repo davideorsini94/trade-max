@@ -739,9 +739,37 @@ def get_pending_status(db) -> dict:
         min(still_maturing) + timedelta(days=EVALUATION_WINDOW_DAYS) if still_maturing else None
     )
 
+    # The evaluation runs a SECOND, horizon-aware pass too (see
+    # _run_weekly_evaluation_impl): a recommendation already scored at 7 days can
+    # still be waiting for its own horizon_days to mature. Counting it here is
+    # what lets a caller tell whether a run would do any real work at all —
+    # ``ready_count == 0`` alone would wrongly suggest "nothing to do".
+    horizon_candidates = (
+        db.execute(
+            select(Recommendation).where(
+                Recommendation.evaluated_h.is_(False),
+                Recommendation.created_at <= now - timedelta(days=HORIZON_MIN_DAYS),
+            )
+        )
+        .scalars()
+        .all()
+    )
+    horizon_ready_count = 0
+    for rec in horizon_candidates:
+        window = _clamped_horizon(rec)
+        if rec.created_at + timedelta(days=window) > now:
+            continue  # its own horizon has not matured yet
+        if rec.entry_price is None or rec.entry_price <= 0:
+            continue
+        target = rec.created_at + timedelta(days=window)
+        if _first_close_at_or_after(db, rec.symbol_id, target) is None:
+            continue
+        horizon_ready_count += 1
+
     return {
         "pending_count": len(still_maturing),
         "ready_count": ready_count,
         "awaiting_price_count": awaiting_price_count,
+        "horizon_ready_count": horizon_ready_count,
         "next_evaluable_at": next_evaluable_at,
     }
