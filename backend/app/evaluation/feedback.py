@@ -262,9 +262,14 @@ def _build_agent_payload(
 def _gather_worst_cases(db, evaluation_id: int) -> dict[str, list[dict]]:
     """For each agent, its ``MAX_WORST_CASES`` worst evaluated cases this period.
 
-    Analysts are ranked by signal error (biggest miss first); synthesizer and
-    validator by realized outcome_score (worst outcome first).
+    Analysts are ranked by signal error (biggest miss first); the synthesizer by
+    realized outcome_score (worst outcome first). The VALIDATOR is ranked on the
+    counterfactual instead — see the comment where its case is built.
     """
+    # Lazy import: ``app.evaluation.evaluator`` imports THIS module, so pulling it
+    # in at module level would be a cycle (same reason get_llm_client is lazy).
+    from app.evaluation.evaluator import _outcome_score, _proposed_action
+
     recs = (
         db.execute(
             select(Recommendation).where(Recommendation.evaluation_id == evaluation_id)
@@ -333,7 +338,21 @@ def _gather_worst_cases(db, evaluation_id: int) -> dict[str, list[dict]]:
             synth_case["features"] = synth_features
         synth_cases.append(synth_case)
 
+        # The validator's own worst case is NOT the one with the worst final
+        # outcome: when it blocks a proposal the final action becomes HOLD, which
+        # scores well in a quiet market, so a wrongly-blocked winner used to look
+        # like a success and never reached the coach. Rank it on the
+        # COUNTERFACTUAL instead — what the blocked proposal would have earned.
         validator_case = {**common, "verdict": rec.validator_verdict}
+        proposed = _proposed_action(rec)
+        if proposed != rec.action:
+            counter = _outcome_score(proposed, ret)
+            validator_case["proposed_action"] = proposed
+            validator_case["blocked_proposal_would_have_scored"] = round(counter, 3)
+            # Blocking a winner is the validator's error: rank those first.
+            validator_case["_rank"] = -counter
+        else:
+            validator_case["_rank"] = score
         validator_features = _feature_values_for_agent(rec.features_json, "validator")
         if validator_features:
             validator_case["features"] = validator_features
@@ -348,8 +367,12 @@ def _gather_worst_cases(db, evaluation_id: int) -> dict[str, list[dict]]:
     result["synthesizer"] = sorted(synth_cases, key=lambda case: case["outcome_score"])[
         :MAX_WORST_CASES
     ]
-    result["validator"] = sorted(validator_cases, key=lambda case: case["outcome_score"])[
+    ranked_validator = sorted(validator_cases, key=lambda case: case["_rank"])[
         :MAX_WORST_CASES
+    ]
+    # ``_rank`` is an internal sort key, never sent to the LLM.
+    result["validator"] = [
+        {k: v for k, v in case.items() if k != "_rank"} for case in ranked_validator
     ]
     return result
 

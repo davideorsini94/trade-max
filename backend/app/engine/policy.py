@@ -347,7 +347,12 @@ def apply(
         if revised_sizing and revised_sizing != sizing:
             changes.append(f"sizing {sizing}→{revised_sizing}")
             sizing = revised_sizing
-        adjustment = _clamp(_to_float(verdict.get("confidence_adjustment"), 0.0), -0.4, 0.0)
+        # Keep this floor in sync with app.agents.validator.MIN_CONFIDENCE_ADJUSTMENT
+        # (duplicated on purpose: the policy engine must not trust the agent layer
+        # to have clamped). Widened past -0.2 and a single confidence cut can drop a
+        # BUY under min_conf_buy on its own — see Rule 3 — letting the validator
+        # kill a proposal by arithmetic instead of by an explicit action downgrade.
+        adjustment = _clamp(_to_float(verdict.get("confidence_adjustment"), 0.0), -0.2, 0.0)
         if adjustment != 0.0:
             new_conf = _clamp(confidence + adjustment, 0.0, 1.0)
             changes.append(f"confidenza {confidence:.2f}→{new_conf:.2f}")

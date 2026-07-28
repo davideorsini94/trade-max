@@ -48,6 +48,13 @@ AGENT_NAMES: tuple[str, ...] = ANALYST_AGENTS + ("synthesizer", "validator")
 EVALUATION_WINDOW_DAYS = 7
 # outcome_score above this counts the recommendation (or final action) as correct.
 CORRECT_THRESHOLD = 0.2
+#: HOLD needs a HIGHER bar than a directional call. Its score is
+#: ``1 - 2*min(|ret|/norm, 1)``, so the generic 0.2 threshold called a HOLD
+#: "correct" for any |ret| < 2% at the 7-day window — i.e. almost every quiet
+#: week, which handed a free ~92% accuracy to whatever forced the HOLD. At 0.6
+#: the market must really have stayed put: |ret| < 0.2*norm (1% at 7 days), the
+#: same 1% a BUY has to beat to be scored correct.
+HOLD_CORRECT_THRESHOLD = 0.6
 # |signal| below this is treated as a "flat"/no-direction prediction.
 FLAT_SIGNAL_THRESHOLD = 0.15
 # A flat prediction is correct when the realized move stayed within this band (%),
@@ -91,7 +98,7 @@ class _EvalItem:
     rec: Recommendation
     ret: float          # the return actually scored against, in percent
     score: float         # outcome_score, -1..+1
-    correct: bool        # score > CORRECT_THRESHOLD
+    correct: bool        # see _is_correct (HOLD is held to a higher bar)
     norm: float = BASE_NORM_PCT   # +-norm% saturates the score to +-1.0
 
 
@@ -127,6 +134,17 @@ def _outcome_score(action: str, ret: float, norm: float = BASE_NORM_PCT) -> floa
 def _ideal_signal(ret: float, norm: float = BASE_NORM_PCT) -> float:
     """The signal a perfect analyst would have emitted for this realized move."""
     return _clamp(ret / norm)
+
+
+def _is_correct(action: str, score: float) -> bool:
+    """Was this action right? HOLD is held to :data:`HOLD_CORRECT_THRESHOLD`.
+
+    A directional call (BUY/SELL) only has to beat CORRECT_THRESHOLD, but "do
+    nothing" must not be scored correct merely because the market was quiet —
+    that made inaction the safest way to look accurate.
+    """
+    threshold = HOLD_CORRECT_THRESHOLD if action == "HOLD" else CORRECT_THRESHOLD
+    return score > threshold
 
 
 def _norm_pct(window_days: int) -> float:
@@ -335,6 +353,60 @@ async def _benchmark_return_for(
 # --------------------------------------------------------------------------- #
 
 
+def _proposed_action(rec: Recommendation) -> str:
+    """The action the SYNTHESIZER proposed, before validator/policy touched it.
+
+    Read from ``synthesizer_json`` (always persisted with the proposal) rather
+    than ``original_action``: the latter is set by the policy engine on ANY
+    override, so it cannot tell "the validator downgraded this" from "a policy
+    rule did". Falls back to ``original_action``, then to the final action.
+    """
+    try:
+        action = (json.loads(rec.synthesizer_json or "{}") or {}).get("action")
+    except (TypeError, ValueError):
+        action = None
+    if action in ("BUY", "SELL", "HOLD"):
+        return action
+    return rec.original_action or rec.action
+
+
+def _policy_rule_failed(rec: Recommendation, rule: str) -> bool:
+    """True when ``rule`` is recorded as NOT passed in ``policy_checks_json``."""
+    try:
+        checks = json.loads(rec.policy_checks_json or "[]") or []
+    except (TypeError, ValueError):
+        return False
+    return any(
+        isinstance(c, dict) and c.get("rule") == rule and c.get("passed") is False
+        for c in checks
+    )
+
+
+def _validator_blocked(rec: Recommendation, validator_analysis: Analysis | None) -> bool:
+    """True when the VALIDATOR (not a policy rule) is what stopped the proposal.
+
+    Two ways it blocks: an explicit VETO or a REVISE that names a different
+    ``revised_action``; plus the indirect route — a confidence cut that makes the
+    policy's ``min_confidence`` rule fail, which downgrades the action without the
+    validator ever saying so.
+    """
+    if rec.validator_verdict == "VETO":
+        return True
+    if rec.validator_verdict != "REVISE":
+        return False
+    try:
+        out = json.loads(validator_analysis.output_json or "{}") if validator_analysis else {}
+    except (TypeError, ValueError):
+        out = {}
+    if not isinstance(out, dict):
+        out = {}
+    revised = out.get("revised_action")
+    if revised and revised != _proposed_action(rec):
+        return True
+    adjustment = out.get("confidence_adjustment") or 0.0
+    return adjustment < 0 and _policy_rule_failed(rec, "min_confidence")
+
+
 def _attribute_per_agent(db, items: list[_EvalItem]) -> dict:
     """Build ``{agent: {accuracy, avg_signal_error, n_samples}}`` for all 7 agents.
 
@@ -384,16 +456,25 @@ def _attribute_per_agent(db, items: list[_EvalItem]) -> dict:
         )
         samples["synthesizer"].append((item.correct, synth_weight, synth_err))
 
-        # --- validator: final action, plus useful-veto credit ---
+        # --- validator: scored on the COUNTERFACTUAL whenever it blocked ---
         validator = by_agent.get("validator")
         validator_weight = _confidence_weight(
             validator.confidence if validator is not None else rec.confidence
         )
-        if rec.validator_verdict == "VETO":
-            # The proposal was blocked; original_action is what would have run.
-            would_have = rec.original_action or rec.action
-            veto_useful = _outcome_score(would_have, ret, item.norm) <= 0
-            samples["validator"].append((veto_useful, validator_weight, None))
+        proposed = _proposed_action(rec)
+        if _validator_blocked(rec, validator) and proposed != rec.action:
+            # What would the synthesizer's own proposal have earned? Blocking a
+            # loser is a win; blocking a winner is an error. Previously this
+            # check ran only for VETO — a verdict the validator never used — so
+            # every REVISE got the easy credit of "the HOLD it forced was fine",
+            # and a market that barely moves makes HOLD look right almost always.
+            counter = _outcome_score(proposed, ret, item.norm)
+            if counter <= 0.0:
+                samples["validator"].append((True, validator_weight, None))
+            elif counter > CORRECT_THRESHOLD:
+                samples["validator"].append((False, validator_weight, None))
+            # Grey zone (0 < counter <= threshold): the block changed nothing
+            # worth scoring, so it contributes no sample rather than a coin flip.
         else:
             samples["validator"].append((item.correct, validator_weight, None))
 
@@ -499,7 +580,7 @@ async def _run_weekly_evaluation_impl() -> Evaluation:
                 continue  # prices still missing after refresh; leave unevaluated
             score = _outcome_score(rec.action, ret)
             items.append(
-                _EvalItem(rec=rec, ret=ret, score=score, correct=score > CORRECT_THRESHOLD)
+                _EvalItem(rec=rec, ret=ret, score=score, correct=_is_correct(rec.action, score))
             )
 
         # Make sure every evaluated symbol is cached (for best/worst tickers).
@@ -555,7 +636,7 @@ async def _run_weekly_evaluation_impl() -> Evaluation:
                     rec=rec,
                     ret=effective_ret,
                     score=score,
-                    correct=score > CORRECT_THRESHOLD,
+                    correct=_is_correct(rec.action, score),
                     norm=norm,
                 )
             )
