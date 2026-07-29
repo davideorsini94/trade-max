@@ -5,12 +5,14 @@ import type {
   EvaluationOut,
   PendingEvaluationOut,
   PerformanceSummaryOut,
+  SimPortfolioOut,
 } from "../api/types";
 import { useApi } from "../hooks/useApi";
 import Card from "../components/common/Card";
 import Spinner from "../components/common/Spinner";
 import ErrorBox from "../components/common/ErrorBox";
 import AccuracyTrendChart from "../components/charts/AccuracyTrendChart";
+import SimPortfolioCard from "../components/performance/SimPortfolioCard";
 import InfoTip from "../components/common/InfoTip";
 import { formatConfidence, formatDateTimeIt, formatNumber, formatPercent } from "../lib/format";
 import { AGENT_LABELS_IT, AGENT_ORDER, agentLabelIt } from "../lib/labels";
@@ -51,6 +53,9 @@ export default function PerformancePage() {
     [],
   );
   const pendingQuery = useApi<PendingEvaluationOut>(() => apiGet<PendingEvaluationOut>("/evaluations/pending"), []);
+  // Libro simulato del sistema: è ciò che dà alle posizioni un ciclo di vita e
+  // alimenta il tetto di allocazione, quindi vive accanto alle metriche.
+  const simQuery = useApi<SimPortfolioOut>(() => apiGet<SimPortfolioOut>("/sim/portfolio"), []);
 
   const [running, setRunning] = useState(false);
   const [runError, setRunError] = useState<string | null>(null);
@@ -77,6 +82,8 @@ export default function PerformancePage() {
       evaluationsQuery.refetch();
       feedbackQuery.refetch();
       pendingQuery.refetch();
+      summaryQuery.refetch();
+      simQuery.refetch();
     } catch (err) {
       setRunError(isConflict(err) ? "Una valutazione è già in corso." : errorMessage(err));
     } finally {
@@ -277,6 +284,13 @@ export default function PerformancePage() {
               ) : null}
             </Card>
           ) : null}
+
+          <SimPortfolioCard
+            data={simQuery.data}
+            loading={simQuery.loading}
+            error={simQuery.error}
+            onRetry={simQuery.refetch}
+          />
 
           <Card title="Andamento accuratezza per agente">
             <AccuracyTrendChart perAgent={latest.per_agent} />

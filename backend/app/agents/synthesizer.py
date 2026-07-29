@@ -74,6 +74,17 @@ SELL on marginal evidence; if you reverse a recent stance, justify it in the rat
 - allocation_pct is the percentage of the TOTAL budget to allocate (0 for HOLD/WAIT). \
 Keep it modest; downstream deterministic risk policy may reduce it further.
 
+When "system_portfolio" is present in the payload, it is the CURRENT STATE of this \
+desk's own simulated book on OTHER symbols: n_open positions, gross_exposure_pct of \
+the budget already committed, and the largest positions with their weight, days held \
+and unrealized P&L. Use it ONLY for portfolio construction — diversification, \
+concentration and remaining room. Concretely: if gross_exposure_pct is already high, \
+or the candidate would duplicate an existing large position's exposure, prefer a \
+smaller allocation_pct or HOLD, and say so in the rationale. Two hard limits: an open \
+position's unrealized P&L must NEVER bias this decision (no sunk-cost reasoning — \
+judge THIS symbol on its own forward evidence), and the book's past outcomes are not \
+in this payload, so never claim the desk has been right or wrong lately.
+
 Never invent data that no analyst reported. Base every claim on the reports and \
 context provided.
 
@@ -163,6 +174,7 @@ class SynthesizerAgent(BaseAgent):
         currency: str,
         previous_recommendation: dict[str, Any] | None,
         user_position: dict[str, Any] | None = None,
+        system_portfolio: dict[str, Any] | None = None,
     ) -> str:
         """Serialise the aggregated decision inputs as a compact JSON payload.
 
@@ -171,6 +183,13 @@ class SynthesizerAgent(BaseAgent):
         ``app.engine.positions.compact_position_for_prompt``. It is omitted
         from the payload entirely when there is no logged transaction, so a
         title the user has never "bought" costs zero extra tokens.
+
+        ``system_portfolio`` (when not None) is the STATE of the desk's own
+        simulated book across the OTHER symbols — see
+        ``app.engine.sim_book.compact_book_for_prompt``. Without it the
+        synthesizer had no way of knowing it was proposing an eighth correlated
+        BUY. Omitted entirely when no position is open, so the common case costs
+        nothing.
         """
         outputs = analyst_outputs if isinstance(analyst_outputs, dict) else {}
         reports = {key: outputs.get(key) for key in ANALYST_KEYS}
@@ -186,6 +205,8 @@ class SynthesizerAgent(BaseAgent):
         }
         if user_position is not None:
             payload["user_position"] = user_position
+        if system_portfolio is not None:
+            payload["system_portfolio"] = system_portfolio
         return (
             "Synthesize the following analyst reports and context into a single "
             "proposal, and respond with the JSON object described in your "
@@ -205,6 +226,7 @@ class SynthesizerAgent(BaseAgent):
         lessons: list[str],
         llm: LLMClient,
         user_position: dict[str, Any] | None = None,
+        system_portfolio: dict[str, Any] | None = None,
     ) -> AgentResult:
         """Run the synthesizer and return its validated proposal.
 
@@ -220,6 +242,7 @@ class SynthesizerAgent(BaseAgent):
             currency=currency,
             previous_recommendation=previous_recommendation,
             user_position=user_position,
+            system_portfolio=system_portfolio,
         )
         pref_provider, pref_model = resolve_llm_pref(self.name)
         parsed, provider = await llm.complete_json(

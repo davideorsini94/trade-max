@@ -581,3 +581,88 @@ export interface OllamaPullStatusOut {
   percent: number | null;
   detail_it: string;
 }
+
+/**
+ * Portafoglio simulato del sistema (GET /sim/portfolio).
+ *
+ * Da non confondere con il diario dell'utente (`TransactionOut` /
+ * `PositionSummaryOut`): questo libro lo tiene il sistema da solo, aprendo una
+ * posizione quando emette un BUY e chiudendola su stop-loss, take-profit,
+ * scadenza dell'orizzonte o un SELL. Serve a dare alle posizioni un ciclo di
+ * vita — prima non scadevano mai e saturavano la regola sulla riserva di
+ * liquidità — e a misurare il PERCORSO di un'operazione, non solo il suo punto
+ * d'arrivo.
+ */
+export interface SimPositionOut {
+  id: number;
+  symbol_id: number;
+  ticker: string;
+  name: string;
+  currency: string;
+  status: "OPEN" | "CLOSED" | "STALE";
+  weight_pct: number;
+  /** `null` quando non c'era un prezzo di seduta per stimare le azioni. */
+  avg_entry_price: number | null;
+  cost_total: number;
+  shares_open: number;
+  opened_session: string | null;
+  closed_session: string | null;
+  stop_loss_price: number | null;
+  take_profit_price: number | null;
+  horizon_days: number;
+  close_reason: "STOP_LOSS" | "TAKE_PROFIT" | "HORIZON" | "SELL_RECO" | null;
+  exit_price: number | null;
+  realized_pnl: number | null;
+  realized_pnl_pct: number | null;
+  /** Stop e take-profit toccati nella stessa barra: vince lo stop, e si dichiara. */
+  exit_ambiguous: boolean;
+  /** Escursione avversa/favorevole massima: quanto il prezzo è andato contro/a favore. */
+  mae_pct: number | null;
+  mfe_pct: number | null;
+  market_value: number | null;
+  unrealized_pnl: number | null;
+  unrealized_pnl_pct: number | null;
+  days_open: number | null;
+}
+
+export interface SimCurrencyAggregateOut {
+  realized_pnl: number;
+  /** `null` se anche una sola posizione aperta non ha un prezzo recente. */
+  unrealized_pnl: number | null;
+  cost_open: number;
+  n_open: number;
+  n_closed: number;
+}
+
+export interface SimStatsOut {
+  status: "ok" | "dati_insufficienti";
+  n: number;
+  n_raw: number;
+  n_symbols: number;
+  min_n: number;
+  min_symbols: number;
+  by_close_reason: Record<string, number>;
+  n_ambiguous: number;
+  stop_hit_rate: number | null;
+  tp_hit_rate: number | null;
+  avg_mae_pct: number | null;
+  avg_mfe_pct: number | null;
+  avg_pnl_pct: number | null;
+  avg_pnl_pct_by_reason: Record<string, number>;
+}
+
+export interface SimPortfolioOut {
+  base_notional: number;
+  fee_pct: number;
+  n_open: number;
+  n_closed: number;
+  n_stale: number;
+  gross_exposure_pct: number;
+  /** Aggregati PER VALUTA: non esiste un totale fra valute (nessun tasso di cambio). */
+  by_currency: Record<string, SimCurrencyAggregateOut>;
+  open_positions: SimPositionOut[];
+  /** Scadute senza prezzi con cui chiuderle: dichiarate, non chiuse a un prezzo inventato. */
+  stale_positions: SimPositionOut[];
+  recent_closed: SimPositionOut[];
+  stats: SimStatsOut;
+}

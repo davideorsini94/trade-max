@@ -35,6 +35,7 @@ import httpx
 from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
 
+from app.data.news_select import score_item, select_macro_items
 from app.data.sources import CORPORATE_SOURCES, MACRO_SOURCES, SEC_EDGAR_USER_AGENT
 from app.models import NewsItem
 
@@ -254,8 +255,12 @@ class NewsService:
                         # fallback these rows get published_at=NULL and are excluded
                         # forever by _latest_from_db's "isnot(None)" freshness filter.
                         # First-seen time is a reasonable proxy given the 30-minute
-                        # refresh cadence.
+                        # refresh cadence — ma è un valore INVENTATO, quindi viene
+                        # dichiarato tale nella colonna qui sotto e la selezione non
+                        # lo tratta come prova di freschezza (era il motivo per cui
+                        # quattro elementi ESMA di boilerplate finivano nel payload).
                         published_at=entry["published_at"] or datetime.utcnow(),
+                        published_is_estimated=entry["published_at"] is None,
                         fetched_at=datetime.utcnow(),
                     )
                 )
@@ -291,35 +296,48 @@ class NewsService:
         )
         rows = query.order_by(NewsItem.published_at.desc()).all()
 
-        # High-frequency commercial wires (CNBC, MarketWatch...) publish far more
-        # often than official/regulatory sources, so a plain "most recent N" would
-        # crowd the latter out of the prompt entirely. Cap each source's share of
-        # the window first for diversity, then backfill any spare slots with the
-        # next most recent items regardless of source so the total still reaches
-        # _MAX_ITEMS_RETURNED when few distinct sources are active.
-        selected: list[NewsItem] = []
-        overflow: list[NewsItem] = []
-        per_source_count: dict[str, int] = {}
-        for row in rows:
-            if per_source_count.get(row.source_key, 0) < _MAX_ITEMS_PER_SOURCE:
-                selected.append(row)
-                per_source_count[row.source_key] = per_source_count.get(row.source_key, 0) + 1
-            else:
-                overflow.append(row)
-        if len(selected) < _MAX_ITEMS_RETURNED:
-            selected.extend(overflow[: _MAX_ITEMS_RETURNED - len(selected)])
-        selected.sort(key=lambda row: row.published_at, reverse=True)
-        selected = selected[:_MAX_ITEMS_RETURNED]
+        if category == "MACRO":
+            # Selezione per RILEVANZA con quote per tema (vedi
+            # ``app.data.news_select``): la sola recenza faceva sparire dal
+            # payload un attacco missilistico perché CNBC pubblica 76 elementi su
+            # 120 e i suoi 3 posti andavano all'ultimo quarto d'ora. Il totale
+            # resta 15: cambia quali 15, non quanti.
+            selected = select_macro_items(rows, limit=_MAX_ITEMS_RETURNED)
+        else:
+            # Le notizie societarie restano ordinate per recenza: sono già
+            # filtrate per ticker, quindi non esiste il problema di un tema che
+            # ne scaccia un altro.
+            selected = []
+            overflow: list[NewsItem] = []
+            per_source_count: dict[str, int] = {}
+            for row in rows:
+                if per_source_count.get(row.source_key, 0) < _MAX_ITEMS_PER_SOURCE:
+                    selected.append(row)
+                    per_source_count[row.source_key] = per_source_count.get(row.source_key, 0) + 1
+                else:
+                    overflow.append(row)
+            if len(selected) < _MAX_ITEMS_RETURNED:
+                selected.extend(overflow[: _MAX_ITEMS_RETURNED - len(selected)])
+            selected.sort(key=lambda row: row.published_at, reverse=True)
+            selected = selected[:_MAX_ITEMS_RETURNED]
 
-        return [
-            {
+        out: list[dict] = []
+        for row in selected:
+            item: dict = {
                 "source": self._display_name(row.source_key, category),
                 "title": row.title,
                 "summary": row.summary,
                 "published_at": row.published_at,
             }
-            for row in selected
-        ]
+            if category == "MACRO":
+                # Il tema costa ~35 token su tutto il payload e aiuta l'agente a
+                # raggruppare le evidenze invece di trattare 15 titoli come un
+                # elenco piatto.
+                topic, _score = score_item(row)
+                if topic:
+                    item["topic"] = topic
+            out.append(item)
+        return out
 
     @staticmethod
     def _display_name(source_key: str, category: str) -> str:

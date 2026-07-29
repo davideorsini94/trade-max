@@ -131,11 +131,16 @@ def test_same_symbol_same_week_counts_once(db_session_factory: sessionmaker[Sess
         db.add(symbol)
         db.commit()
         db.refresh(symbol)
-        base = datetime.utcnow() - timedelta(days=3)
+        # Ancorato a un mercoledì FISSO, non a ``utcnow``: seminando in modo
+        # relativo, quando il test girava di domenica sera il "+4h" scivolava
+        # nella settimana ISO successiva e la deduplicazione ne trovava
+        # legittimamente due. Il bug era nel test, non nella deduplicazione.
+        now = datetime(2026, 7, 29, 12, 0)  # mercoledì
+        base = now - timedelta(days=1)  # martedì, stessa settimana ISO
         for hours in (0, 4, 8):
             _seed(db, "DUP", created_at=base + timedelta(hours=hours), symbol_id=symbol.id)
 
-        summary = compute_performance_summary(db)
+        summary = compute_performance_summary(db, now=now)
         assert summary["n_raw"] == 3
         assert summary["n"] == 1
         assert summary["n_symbols"] == 1

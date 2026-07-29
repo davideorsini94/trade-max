@@ -728,3 +728,98 @@ class PositionSummaryOut(BaseModel):
 class TransactionListOut(BaseModel):
     items: list[TransactionOut]
     position: PositionSummaryOut | None
+
+
+# --------------------------------------------------------------------------- #
+# Portafoglio simulato del sistema (blueprint §6 addendum)
+# --------------------------------------------------------------------------- #
+
+
+class SimPositionOut(BaseModel):
+    """Una posizione del libro fittizio del sistema, distinta dal diario utente."""
+
+    id: int
+    symbol_id: int
+    ticker: str
+    name: str
+    currency: str
+    status: Literal["OPEN", "CLOSED", "STALE"]
+    weight_pct: float
+    #: ``None`` quando non c'è un prezzo di seduta per stimare le azioni: la
+    #: posizione resta registrata, ma nulla viene inventato.
+    avg_entry_price: float | None
+    cost_total: float
+    shares_open: float
+    opened_session: date | None
+    closed_session: date | None
+    stop_loss_price: float | None
+    take_profit_price: float | None
+    horizon_days: int
+    close_reason: Literal["STOP_LOSS", "TAKE_PROFIT", "HORIZON", "SELL_RECO"] | None
+    exit_price: float | None
+    realized_pnl: float | None
+    realized_pnl_pct: float | None
+    #: Stop e take-profit toccati nella stessa barra giornaliera: l'ordine è
+    #: inconoscibile, vince lo stop (regola dichiarata) e il caso è contato.
+    exit_ambiguous: bool
+    #: Escursione avversa/favorevole massima: il PERCORSO, non il punto d'arrivo.
+    mae_pct: float | None
+    mfe_pct: float | None
+    market_value: float | None
+    unrealized_pnl: float | None
+    unrealized_pnl_pct: float | None
+    days_open: int | None
+
+
+class SimCurrencyAggregateOut(BaseModel):
+    """Aggregati di UNA valuta: non esiste alcun totale fra valute diverse."""
+
+    realized_pnl: float
+    #: ``None`` se anche una sola posizione aperta non ha un prezzo recente:
+    #: l'aggregato si dichiara parziale invece di sembrare completo.
+    unrealized_pnl: float | None
+    cost_open: float
+    n_open: int
+    n_closed: int
+
+
+class SimStatsOut(BaseModel):
+    """Statistiche di percorso, dietro gli stessi cancelli della pagina Performance."""
+
+    status: Literal["ok", "dati_insufficienti"]
+    n: int
+    n_raw: int
+    n_symbols: int
+    min_n: int
+    min_symbols: int
+    by_close_reason: dict[str, int]
+    n_ambiguous: int
+    stop_hit_rate: float | None
+    tp_hit_rate: float | None
+    avg_mae_pct: float | None
+    avg_mfe_pct: float | None
+    avg_pnl_pct: float | None
+    avg_pnl_pct_by_reason: dict[str, float]
+
+
+class SimPortfolioOut(BaseModel):
+    """Il libro simulato del sistema: conteggi, esposizione, P&L per valuta.
+
+    Nessun indice di Sharpe, nessun rendimento annualizzato, nessuna curva di
+    equity: su questa numerosità sarebbero teatro, e la curva richiederebbe un
+    tasso di cambio che l'app non ha e non inventa.
+    """
+
+    base_notional: float
+    fee_pct: float
+    n_open: int
+    n_closed: int
+    n_stale: int
+    gross_exposure_pct: float
+    by_currency: dict[str, SimCurrencyAggregateOut]
+    open_positions: list[SimPositionOut]
+    #: Posizioni scadute per cui non esistono prezzi con cui chiuderle. Esposte
+    #: separatamente invece di essere nascoste o chiuse a un prezzo inventato.
+    stale_positions: list[SimPositionOut]
+    recent_closed: list[SimPositionOut]
+    stats: SimStatsOut

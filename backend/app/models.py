@@ -13,10 +13,11 @@ Conventions
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 
 from sqlalchemy import (
     Boolean,
+    Date,
     DateTime,
     Float,
     ForeignKey,
@@ -85,6 +86,9 @@ class Symbol(Base):
         back_populates="symbol", cascade="all, delete-orphan", passive_deletes=True
     )
     transactions: Mapped[list["UserTransaction"]] = relationship(
+        back_populates="symbol", cascade="all, delete-orphan", passive_deletes=True
+    )
+    sim_positions: Mapped[list["SimPosition"]] = relationship(
         back_populates="symbol", cascade="all, delete-orphan", passive_deletes=True
     )
 
@@ -297,6 +301,18 @@ class NewsItem(Base):
     url: Mapped[str] = mapped_column(String(600), unique=True, nullable=False)
     summary: Mapped[str] = mapped_column(Text, nullable=False, default="")
     published_at: Mapped[datetime | None] = mapped_column(DateTime, index=True, nullable=True)
+    # True when the feed carried NO usable date and ``published_at`` was filled
+    # with the fetch time instead. ESMA's feed is the live example: it publishes
+    # no ``pubDate`` at all, so without this flag every ESMA item looks brand new
+    # and wins any recency-ordered selection — which is exactly how four ESMA
+    # boilerplate items ("New Q&As available") crowded a genuine geopolitical
+    # headline out of the macro payload. The timestamp is a necessary fallback
+    # (the row would otherwise be unselectable), but it is INVENTED, so it is
+    # declared here and never used as evidence of freshness by
+    # ``app.data.news_select``.
+    published_is_estimated: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
     fetched_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=datetime.utcnow
     )
@@ -425,3 +441,116 @@ class UserTransaction(Base):
     )
 
     symbol: Mapped["Symbol"] = relationship(back_populates="transactions")
+
+
+class SimPosition(Base):
+    """Una posizione del PORTAFOGLIO SIMULATO DEL SISTEMA (blueprint §6 addendum).
+
+    Distinta da :class:`UserTransaction` — che è il diario dell'utente e non
+    viene MAI toccato da questo motore. Qui il sistema tiene il proprio libro
+    fittizio: apre una posizione quando emette un BUY, la porta avanti finché
+    dice HOLD, e la chiude su SELL o quando scatta stop-loss, take-profit o la
+    scadenza dell'orizzonte. Serve a due scopi, in ordine di importanza:
+
+    1. dare alle posizioni un CICLO DI VITA. Prima di questa tabella una
+       posizione aperta era dedotta come "l'ultimo BUY non ancora seguito da un
+       SELL": non scadeva mai, e siccome il sistema dice SELL molto raramente,
+       ``open_allocation_pct`` cresceva in modo monotono fino a saturare la
+       regola 10 (riserva di liquidità) e a forzare a HOLD ogni nuovo BUY.
+    2. produrre statistiche di PERCORSO (escursione avversa/favorevole massima,
+       quante volte lo stop è stato colpito) che il rendimento puntuale a 7
+       giorni e a orizzonte non possono per costruzione vedere.
+
+    ``planned_notional`` è espresso nella valuta del titolo: l'app non ha uno
+    strato di cambio e non inventa un tasso, quindi gli aggregati monetari sono
+    sempre raggruppati per valuta e mai sommati fra valute diverse.
+    """
+
+    __tablename__ = "sim_positions"
+    __table_args__ = (Index("ix_sim_pos_symbol_status", "symbol_id", "status"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    symbol_id: Mapped[int] = mapped_column(
+        ForeignKey("symbols.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    # Ancora di idempotenza: una sola posizione per consiglio BUY che l'ha
+    # aperta, garantita dal vincolo di unicità. È ciò che rende la passata del
+    # motore ripetibile senza creare duplicati.
+    open_recommendation_id: Mapped[int] = mapped_column(
+        ForeignKey("recommendations.id", ondelete="CASCADE"), unique=True, nullable=False
+    )
+    currency: Mapped[str] = mapped_column(String(8), nullable=False)
+    weight_pct: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    planned_notional: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    tranches_total: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    tranches_filled: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    shares_open: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    cost_total: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    avg_entry_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Snapshot dei livelli decisi al momento del consiglio. ``None`` significa
+    # che quel tipo di uscita non può semplicemente scattare: non viene MAI
+    # inventato un livello mancante.
+    stop_loss_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    take_profit_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    horizon_days: Mapped[int] = mapped_column(Integer, nullable=False, default=30)
+    opened_session: Mapped[date | None] = mapped_column(Date, nullable=True)
+    closed_session: Mapped[date | None] = mapped_column(Date, nullable=True)
+    # "OPEN" | "CLOSED" | "STALE" (scaduta ma senza prezzi disponibili per
+    # chiuderla: si dichiara, non si inventa un prezzo di uscita).
+    status: Mapped[str] = mapped_column(String(8), nullable=False, default="OPEN", index=True)
+    # "STOP_LOSS" | "TAKE_PROFIT" | "HORIZON" | "SELL_RECO"
+    close_reason: Mapped[str | None] = mapped_column(String(12), nullable=True)
+    exit_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    proceeds_net: Mapped[float | None] = mapped_column(Float, nullable=True)
+    realized_pnl: Mapped[float | None] = mapped_column(Float, nullable=True)
+    realized_pnl_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # True quando in una stessa barra giornaliera il minimo ha perforato lo stop
+    # E il massimo ha raggiunto il take-profit: con dati giornalieri l'ordine dei
+    # due eventi è inconoscibile. La regola dichiarata è "vince lo stop", e il
+    # caso viene contato qui invece di essere nascosto.
+    exit_ambiguous: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    mae_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    mfe_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.utcnow
+    )
+
+    symbol: Mapped["Symbol"] = relationship(back_populates="sim_positions")
+    fills: Mapped[list["SimFill"]] = relationship(
+        back_populates="position", cascade="all, delete-orphan", passive_deletes=True
+    )
+
+
+class SimFill(Base):
+    """Registro in sola aggiunta delle esecuzioni fittizie di una posizione.
+
+    Lo stato della posizione è interamente ricostruibile da queste righe (vedi
+    ``app.engine.sim_book.rebuild_position_state``): le colonne denormalizzate
+    su :class:`SimPosition` sono una comodità di lettura, non la verità.
+
+    Il vincolo di unicità su (posizione, lato, seduta) è la seconda guardia di
+    idempotenza dopo ``open_recommendation_id``: le tranche di un DCA distano
+    almeno sette giorni, quindi una collisione legittima non esiste.
+    """
+
+    __tablename__ = "sim_fills"
+    __table_args__ = (
+        UniqueConstraint("position_id", "side", "session", name="uq_sim_fill_pos_side_session"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    position_id: Mapped[int] = mapped_column(
+        ForeignKey("sim_positions.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    side: Mapped[str] = mapped_column(String(4), nullable=False)  # "BUY" | "SELL"
+    # "ENTRY" | "DCA" | "STOP_LOSS" | "TAKE_PROFIT" | "HORIZON" | "SELL_RECO"
+    reason: Mapped[str] = mapped_column(String(12), nullable=False)
+    session: Mapped[date] = mapped_column(Date, nullable=False)
+    price: Mapped[float] = mapped_column(Float, nullable=False)
+    shares: Mapped[float] = mapped_column(Float, nullable=False)
+    notional: Mapped[float] = mapped_column(Float, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.utcnow
+    )
+
+    position: Mapped["SimPosition"] = relationship(back_populates="fills")

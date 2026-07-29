@@ -23,6 +23,7 @@ from app.engine.orchestrator import (
     _open_position_correlations,
 )
 from app.engine.policy import MarketMetrics
+from app.engine.sim_trader import sync_shadow_book
 from app.models import AnalysisRun, PriceHistory, Recommendation, Symbol, UserTransaction
 
 # A deterministic, oscillating (non-constant, non-trending) return series so
@@ -83,7 +84,17 @@ def _seed_symbol(
     return symbol.id
 
 
-def _seed_buy(db: Session, symbol_id: int, *, allocation_pct: float = 10.0) -> None:
+def _seed_buy(
+    db: Session, symbol_id: int, *, allocation_pct: float = 10.0, days_ago: int = 10
+) -> None:
+    """Semina un BUY e materializza la posizione nel libro simulato.
+
+    ``_open_buy_positions`` non deduce più le posizioni aperte dai consigli (era
+    l'euristica senza scadenza che saturava la regola 10): la sorgente di verità
+    è ora ``sim_positions``, quindi il consiglio da solo non basta e va fatta
+    girare la passata del motore. Il BUY è datato indietro perché il riempimento
+    avviene alla chiusura della seduta SUCCESSIVA, che deve esistere.
+    """
     run = AnalysisRun(symbol_id=symbol_id, status="COMPLETED", trigger="MANUAL")
     db.add(run)
     db.flush()
@@ -95,14 +106,18 @@ def _seed_buy(db: Session, symbol_id: int, *, allocation_pct: float = 10.0) -> N
             sizing_strategy="DCA",
             confidence=0.6,
             allocation_pct=allocation_pct,
+            dca_tranches=1,
+            horizon_days=60,
             validator_verdict="APPROVE",
-            created_at=datetime.utcnow() - timedelta(days=1),
+            created_at=datetime.utcnow() - timedelta(days=days_ago),
         )
     )
     db.commit()
+    sync_shadow_book(db)
 
 
-def _seed_sell(db: Session, symbol_id: int) -> None:
+def _seed_sell(db: Session, symbol_id: int, *, days_ago: int = 5) -> None:
+    """Semina un SELL e lo fa eseguire, chiudendo la posizione."""
     run = AnalysisRun(symbol_id=symbol_id, status="COMPLETED", trigger="MANUAL")
     db.add(run)
     db.flush()
@@ -115,10 +130,11 @@ def _seed_sell(db: Session, symbol_id: int) -> None:
             confidence=0.6,
             allocation_pct=0.0,
             validator_verdict="APPROVE",
-            created_at=datetime.utcnow(),
+            created_at=datetime.utcnow() - timedelta(days=days_ago),
         )
     )
     db.commit()
+    sync_shadow_book(db)
 
 
 # --------------------------------------------------------------------------- #
@@ -233,11 +249,12 @@ def test_insufficient_overlap_drops_the_pair(
 
 
 # --------------------------------------------------------------------------- #
-# 5. Refactor invariant: _compute_open_allocation behaves exactly as before
+# 5. open_allocation_pct comes from the simulated book, and a closed position
+#    stops occupying allocation (il bug che saturava la regola 10)
 # --------------------------------------------------------------------------- #
 
 
-def test_compute_open_allocation_unchanged_by_refactor(
+def test_only_open_positions_occupy_allocation(
     db_session_factory: sessionmaker[Session],
 ) -> None:
     db = db_session_factory()
@@ -253,6 +270,51 @@ def test_compute_open_allocation_unchanged_by_refactor(
         _seed_sell(db, closed_id)
 
         assert _compute_open_allocation(db, current_id) == pytest.approx(12.5)
+    finally:
+        db.close()
+
+
+def test_an_expired_position_frees_allocation_for_new_buys(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    """Il bug vero, al livello in cui mordeva.
+
+    Con la vecchia euristica un BUY restava "aperto" per sempre, quindi
+    ``open_allocation_pct`` cresceva in modo monotono: era arrivato al 70% e,
+    sommato alla riserva di liquidità del 30%, la regola 10 forzava a HOLD ogni
+    nuovo BUY (7 delle ultime 14 analisi in produzione). Ora una posizione scade
+    e libera lo spazio che occupava.
+    """
+    db = db_session_factory()
+    try:
+        closes = _prices_from_returns(_RETURN_FRACTIONS)
+        current_id = _seed_symbol(db, "CUR8", closes)
+        old_id = _seed_symbol(db, "OLD8", closes)
+
+        run = AnalysisRun(symbol_id=old_id, status="COMPLETED", trigger="MANUAL")
+        db.add(run)
+        db.flush()
+        db.add(
+            Recommendation(
+                run_id=run.id,
+                symbol_id=old_id,
+                action="BUY",
+                sizing_strategy="ALL_IN",
+                confidence=0.6,
+                allocation_pct=70.0,
+                dca_tranches=1,
+                # Orizzonte breve, consiglio vecchio: la scadenza è già passata.
+                horizon_days=7,
+                validator_verdict="APPROVE",
+                created_at=datetime.utcnow() - timedelta(days=40),
+            )
+        )
+        db.commit()
+        sync_shadow_book(db)
+
+        # La posizione è nata, ha vissuto ed è scaduta: non occupa più nulla.
+        assert _compute_open_allocation(db, current_id) == pytest.approx(0.0)
+        assert _open_buy_positions(db, current_id) == []
     finally:
         db.close()
 

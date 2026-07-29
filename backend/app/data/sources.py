@@ -71,6 +71,53 @@ MACRO_SOURCES: Final[dict[str, MacroSource]] = {
         "url": "https://www.esma.europa.eu/rss.xml",
         "lang": "en",
     },
+    # --- Geopolitica, conflitti e sicurezza energetica ---------------------- #
+    # Aggiunte perché la whitelist non aveva UNA fonte dedicata alla geopolitica:
+    # le notizie di guerra arrivavano solo di rimbalzo da CNBC/MarketWatch, e la
+    # selezione per sola recenza le faceva sparire dal payload (vedi
+    # ``app.data.news_select``). Ogni URL qui sotto è stato verificato prima di
+    # essere aggiunto: si scarica, feedparser lo analizza, almeno 3 voci, almeno
+    # l'80% con data e la più recente sotto i 30 giorni. Il controllo
+    # sull'anzianità è quello che ha bocciato in passato ``bls_latest.rss``, un
+    # singolo elemento perpetuo che non si aggiornava mai.
+    # Bocciati in verifica e volutamente NON inclusi: Reuters (RSS pubblico
+    # dismesso), NATO e IEA (404), OPEC, Consiglio UE e IMF (403), Banca Mondiale
+    # (nessuna voce). Scartati per scelta editoriale: Al Jazeera (sbilancerebbe
+    # il payload verso il commento sui conflitti) e CNBC World (darebbe a un solo
+    # editore tre feed).
+    "bbc_world": {
+        "name": "BBC News — Mondo",
+        "url": "http://feeds.bbci.co.uk/news/world/rss.xml",
+        "lang": "en",
+    },
+    "un_news": {
+        "name": "Nazioni Unite",
+        "url": "https://news.un.org/feed/subscribe/en/news/all/rss.xml",
+        "lang": "en",
+    },
+    "sole24_mondo": {
+        "name": "Il Sole 24 Ore Mondo",
+        "url": "https://www.ilsole24ore.com/rss/mondo.xml",
+        "lang": "it",
+    },
+    # Il canale di trasmissione principale da un conflitto ai mercati: l'energia.
+    "cnbc_energy": {
+        "name": "CNBC Energia",
+        "url": "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=19836768",
+        "lang": "en",
+    },
+    "eia_today": {
+        "name": "US EIA — Today in Energy",
+        "url": "https://www.eia.gov/rss/todayinenergy.xml",
+        "lang": "en",
+    },
+    # Le sanzioni UE si annunciano qui: il canale geopolitico più materiale per
+    # un titolo quotato in Europa.
+    "ec_daily": {
+        "name": "Commissione Europea",
+        "url": "https://ec.europa.eu/commission/presscorner/api/rss?language=en",
+        "lang": "en",
+    },
 }
 
 # Per-ticker feed URL templates. ``{ticker}`` is substituted with the symbol's

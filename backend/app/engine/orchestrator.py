@@ -29,7 +29,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
 
@@ -48,9 +48,24 @@ from app.data.market import market_data_service
 from app.data.news import news_service
 from app.db import session_scope
 from app.engine.policy import MarketMetrics, PolicyEngine
-from app.engine.positions import compact_position_for_prompt, summarize_position, user_open_symbol_ids
+from app.engine.positions import (
+    compact_position_for_prompt,
+    resolve_session_close,
+    summarize_position,
+    user_open_symbol_ids,
+)
+from app.engine.sim_book import aggregate_book, compact_book_for_prompt
+from app.engine.sim_trader import open_sim_positions, sync_shadow_book
 from app.evaluation.features import build_feature_snapshot
-from app.models import Analysis, AnalysisRun, AppSettings, Recommendation, Symbol, UserTransaction
+from app.models import (
+    Analysis,
+    AnalysisRun,
+    AppSettings,
+    Recommendation,
+    SimPosition,
+    Symbol,
+    UserTransaction,
+)
 from app.schemas import Action, RunStatus, SymbolOut
 
 logger = logging.getLogger(__name__)
@@ -374,50 +389,31 @@ def _build_risk_metrics(
     }
 
 
-def _open_buy_positions(db, current_symbol_id: int) -> list[tuple[Symbol, Recommendation]]:
-    """The *other* active symbols whose most recent BUY is still open.
+def _open_buy_positions(db, current_symbol_id: int) -> list[tuple[Symbol, SimPosition]]:
+    """The *other* symbols with a position currently open in the simulated book.
 
-    A position is "open" when a symbol's most recent BUY recommendation is not
-    followed by a later SELL for the same symbol (blueprint §5.5 / rule 10).
+    Sostituisce l'euristica precedente — "l'ultimo BUY non ancora seguito da un
+    SELL" — che era la causa di un bug vivo: non faceva scadere niente. Siccome
+    il sistema dice SELL molto raramente, ``open_allocation_pct`` cresceva in
+    modo monotono; con riserva di liquidità al 30% e 70% di posizioni fantasma la
+    regola 10 aveva iniziato a forzare a HOLD *ogni* nuovo BUY (7 delle ultime 14
+    analisi reali, tutte con lo stesso messaggio "posizioni aperte 70,0% ≥
+    100%"). Le posizioni del libro simulato, invece, muoiono su stop-loss,
+    take-profit o scadenza dell'orizzonte, e quando muoiono liberano allocazione
+    (blueprint §6 addendum, ``app.engine.sim_trader``).
     """
-    positions: list[tuple[Symbol, Recommendation]] = []
-    symbols = (
-        db.execute(
-            select(Symbol).where(Symbol.is_active.is_(True), Symbol.id != current_symbol_id)
-        )
-        .scalars()
-        .all()
-    )
-    for sym in symbols:
-        last_buy = db.execute(
-            select(Recommendation)
-            .where(
-                Recommendation.symbol_id == sym.id,
-                Recommendation.action == Action.BUY.value,
-            )
-            .order_by(Recommendation.created_at.desc())
-            .limit(1)
-        ).scalar_one_or_none()
-        if last_buy is None:
-            continue
-        later_sell = db.execute(
-            select(Recommendation)
-            .where(
-                Recommendation.symbol_id == sym.id,
-                Recommendation.action == Action.SELL.value,
-                Recommendation.created_at > last_buy.created_at,
-            )
-            .limit(1)
-        ).scalar_one_or_none()
-        if later_sell is None:
-            positions.append((sym, last_buy))
+    positions: list[tuple[Symbol, SimPosition]] = []
+    for pos in open_sim_positions(db, exclude_symbol_id=current_symbol_id):
+        sym = db.get(Symbol, pos.symbol_id)
+        if sym is not None and sym.is_active:
+            positions.append((sym, pos))
     return positions
 
 
 def _compute_open_allocation(db, current_symbol_id: int) -> float:
-    """Sum of still-open BUY allocations across the *other* active symbols."""
+    """Sum of the open simulated positions' weights across the *other* symbols."""
     return sum(
-        float(rec.allocation_pct or 0.0) for _sym, rec in _open_buy_positions(db, current_symbol_id)
+        float(pos.weight_pct or 0.0) for _sym, pos in _open_buy_positions(db, current_symbol_id)
     )
 
 
@@ -445,10 +441,11 @@ def _daily_returns_by_session(df: pd.DataFrame) -> pd.Series:
 def _open_position_correlations(db, current_symbol_id: int, df_daily: pd.DataFrame) -> list[dict]:
     """90-day daily-return correlation vs. every currently-open position.
 
-    "Open" means either the system's own Recommendation trail (last BUY not
-    yet followed by a SELL — unchanged, still drives the PolicyEngine's
-    cumulative-allocation cap regardless of what the user actually logged) OR
-    a real, user-recorded paper-trading BUY with no matching SELL yet (see
+    "Open" means either a position open in the system's own SIMULATED BOOK
+    (``app.engine.sim_trader`` — la stessa sorgente che alimenta il tetto
+    cumulativo di allocazione della regola 10, e che a differenza della vecchia
+    euristica fa scadere le posizioni) OR a real, user-recorded paper-trading
+    BUY with no matching SELL yet (see
     ``app.engine.positions.user_open_symbol_ids``) — the two sources are
     UNIONED by symbol id so a title is never counted twice. Deterministic and
     DB-only (no network): reuses the already-fetched ``price_history`` for
@@ -483,6 +480,63 @@ def _open_position_correlations(db, current_symbol_id: int, df_daily: pd.DataFra
 
     results.sort(key=lambda item: item["correlation"], reverse=True)
     return results[:_MAX_CORRELATIONS_IN_PROMPT]
+
+
+def _system_portfolio_block(db, current_symbol_id: int, today: date) -> dict | None:
+    """Compact STATE of the system's own simulated book, or ``None`` if empty.
+
+    Serve a un problema preciso: finora né il sintetizzatore né il validatore
+    potevano sapere che stavano proponendo l'ottavo BUY correlato, perché non
+    vedevano affatto il resto del libro. Questo blocco porta l'esposizione, la
+    concentrazione e i giorni di permanenza — cioè STATO — e deliberatamente
+    NESSUNA statistica di performance: dare a un modello la propria striscia di
+    vittorie è il modo più diretto per farlo ancorare a un caso fortunato. Le
+    performance raggiungono l'LLM solo dal coach settimanale, e solo se superano
+    i cancelli di onestà (vedi ``app.engine.sim_book.sim_stats``).
+
+    Il titolo in analisi è escluso: la sua posizione, se c'è, arriva già al
+    sintetizzatore come ``user_position`` o come parte della decisione corrente.
+    Restituisce ``None`` a libro vuoto, così sul caso comune il prompt non paga
+    un token in più.
+    """
+    positions = open_sim_positions(db, exclude_symbol_id=current_symbol_id)
+    if not positions:
+        return None
+
+    rows: list[dict] = []
+    for pos in positions:
+        symbol = db.get(Symbol, pos.symbol_id)
+        if symbol is None:
+            continue
+        # Nessuna rete: la chiusura più recente già in ``price_history``. Se non
+        # c'è, il valore di mercato resta ``None`` e l'aggregato si dichiara
+        # parziale invece di stimare.
+        last_close = resolve_session_close(db, pos.symbol_id, today)
+        market_value: float | None = None
+        unrealized: float | None = None
+        unrealized_pct: float | None = None
+        if last_close is not None and pos.shares_open:
+            market_value = float(last_close) * float(pos.shares_open)
+            unrealized = market_value - float(pos.cost_total or 0.0)
+            if pos.cost_total:
+                unrealized_pct = unrealized / float(pos.cost_total) * 100.0
+        rows.append(
+            {
+                "symbol_id": pos.symbol_id,
+                "ticker": symbol.ticker,
+                "status": "OPEN",
+                "currency": pos.currency,
+                "weight_pct": pos.weight_pct,
+                "cost_total": pos.cost_total,
+                "realized_pnl": None,
+                "market_value": market_value,
+                "unrealized_pnl": unrealized,
+                "unrealized_pnl_pct": unrealized_pct,
+                "days_open": (today - pos.opened_session).days if pos.opened_session else None,
+            }
+        )
+
+    return compact_book_for_prompt(aggregate_book(rows), rows)
 
 
 # --------------------------------------------------------------------------- #
@@ -605,6 +659,15 @@ def _gather_market_data(symbol_id: int, ticker: str) -> dict:
                 market.refresh_prices(db, symbol, interval="1h", days=30)
             except Exception:
                 logger.warning("Refresh prezzi 1h fallito per %s", ticker, exc_info=True)
+        # Il libro simulato va allineato ORA, con i prezzi appena aggiornati, così
+        # l'esposizione che finisce nei prompt e nella regola 10 è quella vera e
+        # non quella di ieri. È idempotente e deterministico (nessuna rete,
+        # nessun LLM), quindi chiamarlo qui oltre che dallo scheduler non cambia
+        # le righe prodotte: cambia solo QUANDO vengono scritte.
+        try:
+            sync_shadow_book(db)
+        except Exception:
+            logger.warning("Aggiornamento libro simulato fallito", exc_info=True)
 
         df_daily = market.get_history_df(db, symbol_id, interval="1d", days=730)
 
@@ -613,6 +676,12 @@ def _gather_market_data(symbol_id: int, ticker: str) -> dict:
         except Exception:
             logger.warning("Calcolo correlazioni posizioni aperte fallito", exc_info=True)
             correlations = []
+
+        try:
+            system_portfolio = _system_portfolio_block(db, symbol_id, datetime.utcnow().date())
+        except Exception:
+            logger.warning("Costruzione stato portafoglio simulato fallita", exc_info=True)
+            system_portfolio = None
 
         try:
             macro_news = news.fetch_macro(db)
@@ -684,6 +753,7 @@ def _gather_market_data(symbol_id: int, ticker: str) -> dict:
         "market_regime": market_regime,
         "metrics": metrics,
         "risk_metrics": risk_metrics,
+        "system_portfolio": system_portfolio,
     }
 
 
@@ -732,6 +802,13 @@ async def _run_analysis_locked(symbol_id: int, trigger: str, run_id: int | None)
             summarize_position(prep["user_transactions"], data["price_summary"].get("close"))
         )
         data["risk_metrics"]["user_position"] = user_position
+
+        # Stato del libro simulato del sistema: stessa logica di iniezione del
+        # blocco sopra (solo decisione, non i 5 analisti oggettivi), e omesso
+        # del tutto quando non c'è nessuna posizione aperta.
+        system_portfolio = data.get("system_portfolio")
+        if system_portfolio:
+            data["risk_metrics"]["system_portfolio"] = system_portfolio
 
         llm = _get_llm()
 
@@ -847,6 +924,7 @@ async def _run_analysis_locked(symbol_id: int, trigger: str, run_id: int | None)
                 currency=prep["currency"],
                 previous_recommendation=prep["previous_recommendation"],
                 user_position=user_position,
+                system_portfolio=system_portfolio,
                 lessons=_load_lessons("synthesizer"),
                 llm=llm,
             )

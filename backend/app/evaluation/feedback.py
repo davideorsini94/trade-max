@@ -75,6 +75,14 @@ _LESSONS_SYSTEM_PROMPT = (
     '- signal_conditions being the string "dati_insufficienti" means there is '
     "not yet enough cumulative history to trust any one condition: do NOT "
     "invent or assume one — base your lessons on worst_cases and metrics only.\n"
+    "- execution_stats (present only for the synthesizer, and only once enough "
+    "positions have closed) describes what actually happened to the desk's own "
+    "simulated trades: how often the stop-loss was hit versus the take-profit, "
+    "and the average max adverse/favorable excursion (how far price moved "
+    "against/for the position before the exit). Use it to sharpen level-setting "
+    "specifically — e.g. if the stop-hit rate is high while the average "
+    "favorable excursion is also large, the stops are too tight for the "
+    "horizon. Absent means not enough closed positions: do not speculate.\n"
     "- Do not repeat lessons it already applies unless you sharpen them.\n"
     "- Invent no facts beyond the provided data.\n"
     "- lessons_it is read by a NON-EXPERT with no finance background: write it in "
@@ -234,15 +242,41 @@ def _feature_values_for_agent(features_json: str | None, agent: str) -> dict[str
     return values
 
 
+def _execution_stats_for_coach(sim_stats: dict | None) -> dict[str, Any] | None:
+    """Statistiche di PERCORSO del libro simulato, solo se superano i cancelli.
+
+    Portano al coach un'informazione che il rendimento puntuale a 7 giorni e a
+    orizzonte non possono contenere: quante volte lo stop è stato colpito, e
+    quanto in profondità il prezzo è andato contro la posizione prima di
+    risalire (MAE). Serve a rendere apprendibile una lezione del tipo "gli stop
+    a due volte l'ATR vengono colpiti e poi il prezzo recupera".
+
+    Restituisce ``None`` quando il campione non supera le soglie: sotto quella
+    numerosità un tasso di stop colpiti misura il denominatore, non la
+    strategia — è la lezione della metrica che oscillava.
+    """
+    if not isinstance(sim_stats, dict) or sim_stats.get("status") != "ok":
+        return None
+    return {
+        "n_closed_positions": sim_stats.get("n"),
+        "stop_hit_rate": sim_stats.get("stop_hit_rate"),
+        "take_profit_hit_rate": sim_stats.get("tp_hit_rate"),
+        "avg_max_adverse_excursion_pct": sim_stats.get("avg_mae_pct"),
+        "avg_max_favorable_excursion_pct": sim_stats.get("avg_mfe_pct"),
+        "avg_realized_pnl_pct_by_exit": sim_stats.get("avg_pnl_pct_by_reason"),
+    }
+
+
 def _build_agent_payload(
     agent: str,
     metrics: dict,
     worst_cases: list[dict],
     active_lessons: list[str],
     feature_stats: dict | None,
+    sim_stats: dict | None = None,
 ) -> dict[str, Any]:
     """Pure: assemble one agent's full coaching payload (testable without a DB)."""
-    return {
+    payload: dict[str, Any] = {
         "metrics": {
             "accuracy": metrics.get("accuracy"),
             "avg_signal_error": metrics.get("avg_signal_error"),
@@ -252,6 +286,15 @@ def _build_agent_payload(
         "active_lessons": active_lessons,
         "signal_conditions": _signal_conditions_for_agent(feature_stats, agent),
     }
+    # Solo al sintetizzatore: è l'unico attore che decide stop_loss_price,
+    # take_profit_price e horizon_days, quindi è l'unico che può agire su queste
+    # statistiche. Darle anche agli altri sei costerebbe token senza cambiare
+    # nulla di ciò che possono fare.
+    if agent == "synthesizer":
+        execution = _execution_stats_for_coach(sim_stats)
+        if execution is not None:
+            payload["execution_stats"] = execution
+    return payload
 
 
 # --------------------------------------------------------------------------- #
@@ -437,6 +480,19 @@ async def generate_lessons(evaluation_id: int) -> None:
             feature_stats = None
 
         worst_cases = _gather_worst_cases(db, evaluation_id)
+
+        # Statistiche di percorso del libro simulato, calcolate al momento della
+        # lettura come tutto il resto delle metriche oneste (nessuna colonna
+        # nuova su Evaluation).
+        try:
+            from app.engine.sim_book import sim_stats as compute_sim_stats
+            from app.engine.sim_trader import closed_position_rows
+
+            book_stats = compute_sim_stats(closed_position_rows(db))
+        except Exception:
+            logger.warning("Statistiche libro simulato non disponibili", exc_info=True)
+            book_stats = None
+
         payloads: dict[str, dict] = {}
         for agent in AGENT_NAMES:
             metrics = per_agent.get(agent) if isinstance(per_agent.get(agent), dict) else {}
@@ -446,6 +502,7 @@ async def generate_lessons(evaluation_id: int) -> None:
                 worst_cases.get(agent, []),
                 get_active_lessons(db, agent),
                 feature_stats,
+                book_stats,
             )
 
     # Phase 2: one LLM call per agent (no DB session held across the await).

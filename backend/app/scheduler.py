@@ -295,6 +295,27 @@ async def job_prices_eod() -> None:
         logger.exception("prices_eod job crashed")
 
 
+async def job_sim_book_sync() -> None:
+    """22:30 Mon-Fri: allinea il libro simulato alle barre appena scaricate.
+
+    Gira dopo ``prices_eod`` (22:15) perché è proprio con le chiusure del giorno
+    che una posizione può scattare in stop, take-profit o scadenza. Deterministico
+    e idempotente: se questa passata salta, la successiva — o la chiamata
+    opportunistica in testa a ogni analisi — produce esattamente le stesse righe.
+    """
+    try:
+        from app.engine.sim_trader import sync_shadow_book
+
+        def _run() -> dict[str, int]:
+            with session_scope() as db:
+                return sync_shadow_book(db)
+
+        counters = await asyncio.to_thread(_run)
+        logger.info("sim_book_sync completato: %s", counters)
+    except Exception:
+        logger.exception("sim_book_sync job crashed")
+
+
 async def _run_scheduled_analyses(
     favorites: bool,
     interval_hours: int,
@@ -402,6 +423,13 @@ def setup_scheduler() -> AsyncIOScheduler:
         job_prices_eod,
         CronTrigger(day_of_week="mon-fri", hour=22, minute=15, timezone=APP_TZ),
         id="prices_eod",
+        replace_existing=True,
+        **_JOB_DEFAULTS,
+    )
+    scheduler.add_job(
+        job_sim_book_sync,
+        CronTrigger(day_of_week="mon-fri", hour=22, minute=30, timezone=APP_TZ),
+        id="sim_book_sync",
         replace_existing=True,
         **_JOB_DEFAULTS,
     )

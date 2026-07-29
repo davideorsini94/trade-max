@@ -377,6 +377,36 @@ export const GLOSSARY: Record<string, GlossEntry> = {
     short:
       "La media dei punteggi di esito, da −1 (del tutto sbagliato) a +1 (del tutto corretto). A differenza dell'accuratezza non dipende da una soglia \"corretto/sbagliato\", quindi resta leggibile anche con pochi consigli valutati e non cambia per un movimento minimo di prezzo.",
   },
+  sim_portfolio: {
+    term: "Portafoglio simulato",
+    short:
+      "Un portafoglio finto che il sistema gestisce da solo: ogni volta che consiglia di comprare apre una posizione con una cifra simbolica, e la chiude quando scatta lo stop loss, il take profit, la scadenza o un consiglio di vendere. Non sono soldi tuoi e non c'entra col tuo diario: serve al sistema per sapere quanto è già esposto e per imparare da come sono andate davvero le sue operazioni.",
+  },
+  sim_weight: {
+    term: "Peso della posizione",
+    short:
+      "Quanta parte del capitale simbolico è impegnata in quella posizione, in percentuale. La somma dei pesi delle posizioni aperte è l'esposizione complessiva: quando è alta, il sistema riduce le nuove proposte di acquisto o passa ad attendere.",
+  },
+  sim_close_reason: {
+    term: "Motivo di chiusura",
+    short:
+      "Perché la posizione simulata si è chiusa: stop loss (il prezzo è scivolato al livello di protezione), take profit (ha raggiunto l'obiettivo di guadagno), scadenza (è finito l'orizzonte temporale previsto) o vendita consigliata. Sapere quale dei quattro prevale dice se i livelli erano tarati bene.",
+  },
+  mae: {
+    term: "Escursione avversa massima",
+    short:
+      "Quanto il prezzo è scivolato al massimo CONTRO la posizione prima che si chiudesse. È il pezzo che il rendimento finale non racconta: un titolo finito a +1% dopo essere passato da −18% non è lo stesso investimento di uno salito tranquillo, perché nel frattempo lo stop loss poteva già essere scattato.",
+  },
+  mfe: {
+    term: "Escursione favorevole massima",
+    short:
+      "Il guadagno massimo che la posizione ha toccato prima di chiudersi. Se è molto più alto del risultato finale, significa che il momento buono c'era e non è stato colto: il take profit era troppo lontano o l'uscita è arrivata tardi.",
+  },
+  sim_stale: {
+    term: "Posizione senza prezzi",
+    short:
+      "Una posizione simulata scaduta per cui non esistono più quotazioni con cui calcolare l'uscita (per esempio un titolo che ha smesso di essere quotato). Viene segnalata così invece di chiuderla a un prezzo inventato: un numero finto sarebbe peggio di un dato mancante dichiarato.",
+  },
   confidence_interval: {
     term: "Intervallo di confidenza",
     short:
@@ -624,6 +654,12 @@ export const GLOSSARY_SECTIONS: ReadonlyArray<{ title: string; keys: readonly st
       "accuracy",
       "confidence_interval",
       "outcome_score_avg",
+      "sim_portfolio",
+      "sim_weight",
+      "sim_close_reason",
+      "mae",
+      "mfe",
+      "sim_stale",
       "avg_signal_error",
       "n_samples",
       "hypothetical_pnl",

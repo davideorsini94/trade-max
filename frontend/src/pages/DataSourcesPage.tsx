@@ -67,7 +67,15 @@ const SECTIONS: SourceSection[] = [
       { name: "CNBC Economy" },
       { name: "MarketWatch" },
       { name: "Il Sole 24 Ore — Finanza & Mercati" },
+      { name: "BBC News — Mondo", detail: "cronaca internazionale e conflitti" },
+      { name: "Nazioni Unite", detail: "aggiornamenti ufficiali su crisi e conflitti in corso" },
+      { name: "Il Sole 24 Ore — Mondo", detail: "scenario internazionale in italiano" },
+      { name: "CNBC Energia", detail: "petrolio, gas ed elettricità: è il canale principale attraverso cui una guerra arriva ai mercati" },
+      { name: "US EIA — Today in Energy", detail: "statistiche e analisi ufficiali dell'agenzia americana per l'energia" },
+      { name: "Commissione Europea", detail: "comunicati ufficiali dell'UE, incluse le decisioni sulle sanzioni" },
     ],
+    note:
+      "I titoli non vengono scelti solo per data di pubblicazione: ogni notizia viene classificata in cinque temi (politica monetaria, inflazione e lavoro, geopolitica e conflitti, energia e materie prime, regolamentazione) e ciascun tema ha dei posti riservati. Serve a evitare che una fonte che pubblica molto spesso riempia lo spazio disponibile e faccia sparire, per esempio, una notizia di conflitto rilevante per i mercati.",
   },
   {
     title: "Notizie societarie",

@@ -55,6 +55,7 @@ _ADDED_COLUMNS: dict[str, dict[str, str]] = {
         "outcome_basis_h": "VARCHAR(10)",
     },
     "evaluations": {"feature_stats_json": "TEXT"},
+    "news_items": {"published_is_estimated": "BOOLEAN NOT NULL DEFAULT 0"},
 }
 
 

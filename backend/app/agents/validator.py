@@ -85,7 +85,13 @@ history. risk_metrics.user_position (when not null) is the user's REAL recorded 
 (fictitious, paper-trading) position on THIS symbol: check the proposed \
 stop_loss_price against "avg_cost_est" and flag a proposal that would double down on \
 a position already at a large unrealized loss ("pnl_pct_est"). Values ending in \
-"_est" are estimates from session closes — say so if you cite one.
+"_est" are estimates from session closes — say so if you cite one. \
+risk_metrics.system_portfolio (when present) is the CURRENT STATE of this desk's own \
+simulated book on OTHER symbols — n_open and gross_exposure_pct of the budget already \
+committed: a BUY that pushes an already-high gross exposure higher is a legitimate, \
+number-anchored sizing concern. It is state, not a track record: never treat an open \
+position's unrealized P&L as evidence about THIS proposal, and never infer that the \
+desk has been recently right or wrong.
 
 Materiality rule: every concern MUST be anchored to a specific number from the risk \
 metrics or a specific finding in a named analyst report, and that evidence must be \

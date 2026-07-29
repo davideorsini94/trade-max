@@ -20,6 +20,7 @@ from app.api import (
     prices,
     recommendations,
     settings,
+    sim,
     symbols,
     transactions,
     universe,
@@ -33,6 +34,7 @@ api_router.include_router(analysis.router)
 api_router.include_router(recommendations.router)
 api_router.include_router(transactions.router)
 api_router.include_router(evaluations.router)
+api_router.include_router(sim.router)
 api_router.include_router(feedback.router)
 api_router.include_router(settings.router)
 api_router.include_router(dashboard.router)
