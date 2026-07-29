@@ -62,6 +62,11 @@ FLAT_SIGNAL_THRESHOLD = 0.15
 FLAT_RETURN_BAND_PCT = 2.0
 # Default confidence weight when an analysis carries no confidence value.
 DEFAULT_CONFIDENCE_WEIGHT = 0.5
+#: Floors for regenerating per-agent lessons. Deliberately softer than the
+#: statistical gate on the DISPLAYED accuracy (lessons are qualitative), but a
+#: batch of one recommendation must not rewrite an agent's standing instructions.
+LESSONS_MIN_ITEMS = 5
+LESSONS_MIN_SYMBOLS = 3
 # Fixed 7-day-equivalent normalization: at the base 7-day window, a +-5% move
 # saturates the outcome score to +-1.0. _norm_pct scales this for other windows.
 BASE_NORM_PCT = 5.0
@@ -707,10 +712,27 @@ async def _run_weekly_evaluation_impl() -> Evaluation:
     )
 
     # LLM-backed feedback: never allowed to fail the evaluation.
-    try:
-        await feedback.generate_lessons(evaluation_id)
-    except Exception:
-        logger.exception("generate_lessons failed for evaluation %s", evaluation_id)
+    # Lessons are gated on batch size: they are injected into every future agent
+    # prompt AND they deactivate the previous ones, so letting a 1-sample batch
+    # rewrite them turns noise into a standing instruction. The floors are softer
+    # than the statistical gate used for the displayed accuracy because lessons
+    # are qualitative — but a single recommendation must never speak for an agent.
+    n_symbols_scored = len({item.rec.symbol_id for item in items})
+    if len(items) >= LESSONS_MIN_ITEMS and n_symbols_scored >= LESSONS_MIN_SYMBOLS:
+        try:
+            await feedback.generate_lessons(evaluation_id)
+        except Exception:
+            logger.exception("generate_lessons failed for evaluation %s", evaluation_id)
+    else:
+        logger.info(
+            "Lezioni saltate per la valutazione %s: lotto troppo piccolo "
+            "(%d campioni su %d titoli; minimo %d su %d)",
+            evaluation_id,
+            len(items),
+            n_symbols_scored,
+            LESSONS_MIN_ITEMS,
+            LESSONS_MIN_SYMBOLS,
+        )
     try:
         await feedback.generate_report_it(evaluation_id)
     except Exception:

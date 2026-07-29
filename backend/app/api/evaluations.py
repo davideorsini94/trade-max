@@ -17,8 +17,14 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
 from app.evaluation.evaluator import get_pending_status, run_weekly_evaluation
+from app.evaluation.summary import compute_performance_summary
 from app.models import AgentFeedback, Evaluation
-from app.schemas import AgentMetrics, EvaluationOut, PendingEvaluationOut
+from app.schemas import (
+    AgentMetrics,
+    EvaluationOut,
+    PendingEvaluationOut,
+    PerformanceSummaryOut,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -125,6 +131,16 @@ def list_evaluations(
 def get_pending_evaluations(db: Session = Depends(get_db)) -> PendingEvaluationOut:
     """Not-yet-scoreable recommendations (need 7 days of history to be scored)."""
     return PendingEvaluationOut(**get_pending_status(db))
+
+
+@router.get("/evaluations/summary", response_model=PerformanceSummaryOut)
+def get_performance_summary(db: Session = Depends(get_db)) -> PerformanceSummaryOut:
+    """Rolling-window performance, recomputed at read time.
+
+    Declared BEFORE ``/evaluations/{evaluation_id}`` on purpose: otherwise
+    "summary" would be swallowed as an id (same reason ``/pending`` sits above).
+    """
+    return PerformanceSummaryOut(**compute_performance_summary(db))
 
 
 @router.get("/evaluations/{evaluation_id}", response_model=EvaluationOut)

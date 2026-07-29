@@ -370,7 +370,17 @@ export const GLOSSARY: Record<string, GlossEntry> = {
   accuracy: {
     term: "Accuratezza",
     short:
-      "La percentuale di raccomandazioni passate che si sono rivelate corrette. Aiuta a capire quanto fidarsi del sistema, ma i risultati passati non garantiscono quelli futuri.",
+      "La percentuale di raccomandazioni passate che si sono rivelate corrette. È calcolata sulle ultime 4 settimane, contando una sola volta lo stesso titolo nella stessa settimana: con meno di 12 consigli su almeno 4 titoli diversi non viene mostrata, perché con pochi casi il numero sarebbe pura aritmetica (con un solo consiglio i valori possibili sono soltanto 0% e 100%). I risultati passati non garantiscono quelli futuri.",
+  },
+  outcome_score_avg: {
+    term: "Punteggio medio esito",
+    short:
+      "La media dei punteggi di esito, da −1 (del tutto sbagliato) a +1 (del tutto corretto). A differenza dell'accuratezza non dipende da una soglia \"corretto/sbagliato\", quindi resta leggibile anche con pochi consigli valutati e non cambia per un movimento minimo di prezzo.",
+  },
+  confidence_interval: {
+    term: "Intervallo di confidenza",
+    short:
+      "L'intervallo entro cui, con il 95% di probabilità, si trova il valore vero. Più è largo, meno il numero centrale è affidabile: con pochi dati può andare da 0% a 79%, il che significa che non si può ancora concludere nulla.",
   },
   avg_signal_error: {
     term: "Errore medio segnale",
@@ -612,6 +622,8 @@ export const GLOSSARY_SECTIONS: ReadonlyArray<{ title: string; keys: readonly st
     keys: [
       "weekly_evaluation",
       "accuracy",
+      "confidence_interval",
+      "outcome_score_avg",
       "avg_signal_error",
       "n_samples",
       "hypothetical_pnl",

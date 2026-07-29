@@ -42,8 +42,14 @@ class AppSettings(Base):
     risk_profile: Mapped[str] = mapped_column(String(16), nullable=False, default="prudente")
     cash_reserve_pct: Mapped[float] = mapped_column(Float, nullable=False, default=30.0)
     max_position_pct: Mapped[float] = mapped_column(Float, nullable=False, default=15.0)
+    # Once a day (was every 4h). Re-analysing the same favourite 2-3x per session
+    # produced near-identical recommendations with overlapping outcome windows:
+    # correlated samples that the evaluation counted as independent, which both
+    # inflated apparent sample size and slowed down real statistical significance
+    # (34 scored recommendations covered only 7 distinct symbols). Still
+    # adjustable from Impostazioni (1-24h) for anyone who wants more reactivity.
     favorites_analysis_interval_hours: Mapped[int] = mapped_column(
-        Integer, nullable=False, default=4
+        Integer, nullable=False, default=24
     )
     others_analysis_interval_hours: Mapped[int] = mapped_column(
         Integer, nullable=False, default=24

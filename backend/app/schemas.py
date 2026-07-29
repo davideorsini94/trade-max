@@ -338,6 +338,38 @@ class PendingEvaluationOut(BaseModel):
     next_evaluable_at: datetime | None
 
 
+class PerformanceSummaryOut(BaseModel):
+    """Rolling-window performance, the honest replacement for a single batch.
+
+    See ``app.evaluation.summary``: the accuracy of ONE evaluation batch swung
+    between 0% and 100% purely because batches hold 1-12 samples. ``accuracy`` is
+    null unless the cohort clears both honesty floors (``min_n`` samples AND
+    ``min_symbols`` distinct symbols); ``ci_low``/``ci_high`` and
+    ``avg_outcome_score`` are present from the first sample because they degrade
+    honestly instead of faking precision.
+    """
+
+    status: Literal["ok", "dati_insufficienti"]
+    window_days: int
+    metric_version: int
+    #: Deduplicated samples (one per symbol per ISO week) and the raw count.
+    n: int
+    n_raw: int
+    n_symbols: int
+    k_correct: int
+    accuracy: float | None
+    ci_low: float | None
+    ci_high: float | None
+    #: Mean outcome_score in [-1, +1]: threshold-free, so unaffected by the ~38%
+    #: of samples that sit near the correct/incorrect boundary.
+    avg_outcome_score: float | None
+    action_mix: dict[str, int]
+    hold_only: bool
+    min_n: int
+    min_symbols: int
+    per_agent: dict[str, dict] = {}
+
+
 class AgentFeedbackOut(BaseModel):
     id: int
     evaluation_id: int

@@ -1,6 +1,11 @@
 import { useMemo, useState } from "react";
 import { apiGet, apiPost, errorMessage, isConflict } from "../api/client";
-import type { AgentFeedbackOut, EvaluationOut, PendingEvaluationOut } from "../api/types";
+import type {
+  AgentFeedbackOut,
+  EvaluationOut,
+  PendingEvaluationOut,
+  PerformanceSummaryOut,
+} from "../api/types";
 import { useApi } from "../hooks/useApi";
 import Card from "../components/common/Card";
 import Spinner from "../components/common/Spinner";
@@ -15,9 +20,11 @@ interface KpiProps {
   label: string;
   value: string;
   info?: string;
+  /** Small print under the value: sample size, confidence interval, caveats. */
+  sub?: string;
 }
 
-function Kpi({ label, value, info }: KpiProps) {
+function Kpi({ label, value, info, sub }: KpiProps) {
   return (
     <div className="rounded-xl border border-[var(--tm-border)] bg-[var(--tm-surface)] p-4 shadow-card">
       <p className="flex items-center gap-1 text-xs uppercase tracking-wider text-slate-500">
@@ -25,12 +32,20 @@ function Kpi({ label, value, info }: KpiProps) {
         {info ? <InfoTip text={info} ariaLabel={`Cosa significa: ${label}`} /> : null}
       </p>
       <p className="mt-1 text-lg font-semibold tabular-nums text-slate-100">{value}</p>
+      {sub ? <p className="mt-1 text-xs leading-snug text-slate-500">{sub}</p> : null}
     </div>
   );
 }
 
 export default function PerformancePage() {
   const evaluationsQuery = useApi<EvaluationOut[]>(() => apiGet<EvaluationOut[]>("/evaluations", { limit: 12 }), []);
+  // Rolling-window performance: the headline numbers come from here, NOT from the
+  // latest batch (a batch can hold a single sample, where accuracy is 0% or 100%
+  // by construction).
+  const summaryQuery = useApi<PerformanceSummaryOut>(
+    () => apiGet<PerformanceSummaryOut>("/evaluations/summary"),
+    [],
+  );
   const feedbackQuery = useApi<AgentFeedbackOut[]>(
     () => apiGet<AgentFeedbackOut[]>("/feedback", { active_only: true }),
     [],
@@ -83,6 +98,24 @@ export default function PerformancePage() {
 
   const latest = evaluationsQuery.data?.[0] ?? null;
   const pending = pendingQuery.data;
+  const summary = summaryQuery.data ?? null;
+  const summaryWeeks = Math.round((summary?.window_days ?? 28) / 7);
+  // With too few samples (or too few distinct titles) the percentage would be
+  // arithmetic, not a measurement — say so instead of showing a confident 0%.
+  const accuracyValue =
+    summary?.status === "ok" && summary.accuracy !== null
+      ? formatConfidence(summary.accuracy)
+      : summary
+        ? "Dati insufficienti"
+        : "—";
+  const accuracySub = !summary
+    ? undefined
+    : summary.status === "ok"
+      ? `IC 95%: ${formatConfidence(summary.ci_low ?? 0)}–${formatConfidence(summary.ci_high ?? 1)} · ` +
+        `${summary.n} consigli unici su ${summary.n_symbols} titoli`
+      : `Finora ${summary.n} ${summary.n === 1 ? "consiglio unico" : "consigli unici"} su ` +
+        `${summary.n_symbols} ${summary.n_symbols === 1 ? "titolo" : "titoli"}: ne servono almeno ` +
+        `${summary.min_n} su ${summary.min_symbols} titoli diversi.`;
   // Optional on the wire (older backends omit them): treat a missing value as 0.
   const awaitingPrice = pending?.awaiting_price_count ?? 0;
   const horizonReady = pending?.horizon_ready_count ?? 0;
@@ -190,21 +223,36 @@ export default function PerformancePage() {
         </div>
       ) : (
         <>
+          {summary?.hold_only ? (
+            <div className="rounded-xl border border-[var(--tm-border)] bg-slate-900/40 px-5 py-4 text-sm leading-relaxed text-slate-300">
+              Tutti i consigli valutati finora sono <span className="font-semibold text-slate-100">MANTIENI</span>:
+              l'accuratezza misura soprattutto quanto il mercato è rimasto calmo, non la capacità di
+              scegliere i titoli. Diventerà più informativa quando matureranno i primi consigli di
+              acquisto o vendita.
+            </div>
+          ) : null}
+
           <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
             <Kpi
-              label="Accuratezza"
-              value={latest.accuracy_overall !== null ? formatConfidence(latest.accuracy_overall) : "—"}
+              label={`Accuratezza (${summaryWeeks} settimane)`}
+              value={accuracyValue}
               info={gloss("accuracy")}
+              sub={accuracySub}
+            />
+            <Kpi
+              label="Punteggio medio esito"
+              value={
+                summary?.avg_outcome_score !== null && summary?.avg_outcome_score !== undefined
+                  ? formatNumber(summary.avg_outcome_score, 2)
+                  : "—"
+              }
+              info={gloss("outcome_score_avg")}
+              sub={summary?.n ? `Su ${summary.n} consigli unici` : undefined}
             />
             <Kpi
               label="Rendimento medio realizzato"
               value={latest.avg_realized_return_pct !== null ? formatPercent(latest.avg_realized_return_pct) : "—"}
               info={gloss("realized_return_7d")}
-            />
-            <Kpi
-              label="P&L ipotetico"
-              value={latest.hypothetical_pnl_pct !== null ? formatPercent(latest.hypothetical_pnl_pct) : "—"}
-              info={gloss("hypothetical_pnl")}
             />
             <Kpi
               label="Valutate"
@@ -219,11 +267,23 @@ export default function PerformancePage() {
               <p className="mt-3 text-xs text-slate-500">
                 Periodo: {formatDateTimeIt(latest.period_start)} – {formatDateTimeIt(latest.period_end)}
               </p>
+              {latest.accuracy_overall !== null ? (
+                <p className="mt-1 text-xs text-slate-500">
+                  Accuratezza di questo singolo lotto:{" "}
+                  {formatConfidence(latest.accuracy_overall)} su {latest.evaluated_count}{" "}
+                  {latest.evaluated_count === 1 ? "consiglio" : "consigli"} — indicativa solo
+                  insieme allo storico.
+                </p>
+              ) : null}
             </Card>
           ) : null}
 
           <Card title="Andamento accuratezza per agente">
             <AccuracyTrendChart perAgent={latest.per_agent} />
+            <p className="mt-3 text-xs text-slate-500">
+              Ogni punto è una valutazione: quelle con pochissimi consigli valutati oscillano per
+              forza (con un solo campione i valori possibili sono soltanto 0% e 100%).
+            </p>
           </Card>
 
           <Card title="Metriche per agente" padded={false}>

@@ -332,7 +332,7 @@ async def _run_scheduled_analyses(
 async def job_analysis_favorites() -> None:
     """Hourly tick: analyze favorites past their interval whose exchange is open."""
     try:
-        interval_hours = _get_setting_int("favorites_analysis_interval_hours", 4)
+        interval_hours = _get_setting_int("favorites_analysis_interval_hours", 24)
         await _run_scheduled_analyses(
             True, interval_hours, "analysis_favorites", only_when_open=True
         )

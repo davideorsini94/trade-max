@@ -368,6 +368,34 @@ export interface PendingEvaluationOut {
   next_evaluable_at: string | null;
 }
 
+/**
+ * Rolling-window performance (GET /evaluations/summary). Replaces reading the
+ * headline accuracy off ONE evaluation batch, which held 1-12 samples and so
+ * swung between 0% and 100% without the pipeline changing at all.
+ * `accuracy` is null until the cohort clears both honesty floors; the interval
+ * and `avg_outcome_score` are present from the first sample.
+ */
+export interface PerformanceSummaryOut {
+  status: "ok" | "dati_insufficienti";
+  window_days: number;
+  metric_version: number;
+  /** Deduplicated samples (one per symbol per ISO week), and the raw count. */
+  n: number;
+  n_raw: number;
+  n_symbols: number;
+  k_correct: number;
+  accuracy: number | null;
+  ci_low: number | null;
+  ci_high: number | null;
+  /** Mean outcome score in [-1, +1]: no threshold, so far steadier at small n. */
+  avg_outcome_score: number | null;
+  action_mix: Record<string, number>;
+  hold_only: boolean;
+  min_n: number;
+  min_symbols: number;
+  per_agent: Record<string, Record<string, unknown>>;
+}
+
 export interface AgentFeedbackOut {
   id: number;
   evaluation_id: number;
